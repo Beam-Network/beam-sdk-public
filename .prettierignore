@@ -1,0 +1,21 @@
+dist/
+node_modules/
+coverage/
+docs/api/
+package-lock.json
+
+# Prettier arrived with the web packages and formats only those plus their docs.
+# The rest of the monorepo predates it and is not formatted to these rules;
+# checking it would fail on untouched code.
+sdks/
+packages/cli/
+packages/vscode/
+packages/zapier/
+python/
+scripts/
+specs/
+README.md
+S3_COMPATIBLE_PROVIDER_CONFIG.md
+HUGGINGFACE_PROVIDER.md
+docs/RELEASE.md
+docs/VS_CODE_EXTENSION.md

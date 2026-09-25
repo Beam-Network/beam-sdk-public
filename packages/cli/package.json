@@ -1,0 +1,34 @@
+{
+    "name":  "@beam-network/cli",
+    "version":  "0.0.0",
+    "description":  "Command line tools for BEAM transfers.",
+    "type":  "module",
+    "license":  "MIT",
+    "sideEffects":  false,
+    "bin":  {
+                "beam-send":  "./dist/cli.js"
+            },
+    "files":  [
+                  "dist",
+                  "README.md"
+              ],
+    "scripts":  {
+                    "build":  "tsc -p tsconfig.json",
+                    "test":  "tsc -p tsconfig.json --noEmit \u0026\u0026 npm run test:functional",
+                    "test:functional":  "npm run build \u0026\u0026 node --test test/cli.functional.test.mjs",
+                    "lint":  "tsc -p tsconfig.json --noEmit"
+                },
+    "publishConfig":  {
+                          "access":  "public"
+                      },
+    "dependencies":  {
+                         "@beam-network/sdk":  "0.5.16"
+                     },
+    "devDependencies":  {
+                            "@types/node":  "^22.10.0",
+                            "typescript":  "^5.5.0"
+                        },
+    "engines":  {
+                    "node":  "\u003e=20"
+                }
+}

@@ -1,0 +1,8 @@
+node_modules/
+build/
+.env
+
+# .zapierapprc is deliberately NOT ignored. It holds the integration's app id,
+# which is not a secret and is what lets a second person `zapier push` to the
+# same integration rather than registering a duplicate. The deploy key lives in
+# ~/.zapierrc, outside the repo, and must never be committed.

@@ -1,0 +1,169 @@
+{
+  "name": "@beam-network/vscode",
+  "displayName": "BEAM Transfer Workbench",
+  "description": "Create, monitor, distribute, and cancel BEAM transfers from VS Code.",
+  "version": "0.0.0",
+  "publisher": "beam-network",
+  "type": "module",
+  "license": "MIT",
+  "sideEffects": false,
+  "main": "./dist/extension.js",
+  "files": [
+    "dist",
+    "media",
+    "README.md",
+    "package.json"
+  ],
+  "engines": {
+    "vscode": "^1.92.0",
+    "node": ">=20"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onView:beam.workbench",
+    "onView:beam.transfers",
+    "onCommand:beam.manageApiKey",
+    "onCommand:beam.clearApiKey",
+    "onCommand:beam.createTransfer",
+    "onCommand:beam.checkStatus",
+    "onCommand:beam.distributeTransfer",
+    "onCommand:beam.cancelTransfer",
+    "onCommand:beam.refreshTransfers",
+    "onCommand:beam.copyTransferId",
+    "onCommand:beam.openTransferJson"
+  ],
+  "contributes": {
+    "configuration": {
+      "title": "BEAM",
+      "properties": {
+        "beam.endpoint": {
+          "type": "string",
+          "default": "tls://orch-gateway.b1m.ai:4222",
+          "description": "Beam NATS lifecycle endpoint."
+        },
+        "beam.pollIntervalMs": {
+          "type": "number",
+          "default": 5000,
+          "minimum": 1000,
+          "description": "Polling interval used by future automatic transfer refresh workflows."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "beam.manageApiKey",
+        "title": "Beam: Manage API Key"
+      },
+      {
+        "command": "beam.clearApiKey",
+        "title": "Beam: Clear API Key"
+      },
+      {
+        "command": "beam.createTransfer",
+        "title": "Beam: Create Transfer"
+      },
+      {
+        "command": "beam.checkStatus",
+        "title": "Beam: Check Transfer Status"
+      },
+      {
+        "command": "beam.distributeTransfer",
+        "title": "Beam: Distribute Transfer"
+      },
+      {
+        "command": "beam.cancelTransfer",
+        "title": "Beam: Cancel Transfer"
+      },
+      {
+        "command": "beam.refreshTransfers",
+        "title": "Beam: Refresh Transfers"
+      },
+      {
+        "command": "beam.copyTransferId",
+        "title": "Beam: Copy Transfer ID"
+      },
+      {
+        "command": "beam.openTransferJson",
+        "title": "Beam: Open Transfer JSON"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "beam",
+          "title": "BEAM",
+          "icon": "media/beam-logo.svg"
+        }
+      ]
+    },
+    "views": {
+      "beam": [
+        {
+          "type": "webview",
+          "id": "beam.workbench",
+          "name": "Workbench"
+        },
+        {
+          "id": "beam.transfers",
+          "name": "Transfers"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "beam.refreshTransfers",
+          "when": "view == beam.transfers",
+          "group": "navigation"
+        },
+        {
+          "command": "beam.createTransfer",
+          "when": "view == beam.transfers",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "beam.checkStatus",
+          "when": "view == beam.transfers && viewItem == beamTransfer",
+          "group": "inline"
+        },
+        {
+          "command": "beam.distributeTransfer",
+          "when": "view == beam.transfers && viewItem == beamTransfer",
+          "group": "inline"
+        },
+        {
+          "command": "beam.cancelTransfer",
+          "when": "view == beam.transfers && viewItem == beamTransfer",
+          "group": "beam"
+        },
+        {
+          "command": "beam.copyTransferId",
+          "when": "view == beam.transfers && viewItem == beamTransfer",
+          "group": "beam"
+        },
+        {
+          "command": "beam.openTransferJson",
+          "when": "view == beam.transfers && viewItem == beamTransfer",
+          "group": "beam"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "test": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@beam-network/sdk": "0.5.16"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/vscode": "^1.92.0",
+    "typescript": "^5.5.0"
+  }
+}

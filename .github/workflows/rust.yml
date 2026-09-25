@@ -1,0 +1,21 @@
+name: Rust SDK CI
+
+on:
+  push:
+    branches: [main, dev]
+    paths:
+      - "sdks/rust/**"
+      - ".github/workflows/rust.yml"
+  pull_request:
+    paths:
+      - "sdks/rust/**"
+      - ".github/workflows/rust.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - working-directory: sdks/rust
+        run: cargo test

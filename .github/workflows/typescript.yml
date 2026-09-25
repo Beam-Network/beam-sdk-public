@@ -1,0 +1,26 @@
+name: TypeScript SDK CI
+
+on:
+  push:
+    branches: [main, dev]
+    paths:
+      - "sdks/typescript/**"
+      - "package.json"
+      - ".github/workflows/typescript.yml"
+  pull_request:
+    paths:
+      - "sdks/typescript/**"
+      - "package.json"
+      - ".github/workflows/typescript.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm install
+      - run: npm run build -w @beam-network/sdk
+      - run: npm run test -w @beam-network/sdk

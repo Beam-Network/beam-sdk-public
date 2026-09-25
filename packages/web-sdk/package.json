@@ -1,0 +1,123 @@
+{
+  "name": "@beam-network/web-sdk",
+  "version": "0.1.0",
+  "description": "Browser SDK for Beam Network: rooms, live media, broadcast, and data transfers.",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./rooms": {
+      "import": {
+        "types": "./dist/rooms/index.d.ts",
+        "default": "./dist/rooms/index.js"
+      },
+      "require": {
+        "types": "./dist/rooms/index.d.cts",
+        "default": "./dist/rooms/index.cjs"
+      }
+    },
+    "./broadcast": {
+      "import": {
+        "types": "./dist/broadcast/index.d.ts",
+        "default": "./dist/broadcast/index.js"
+      },
+      "require": {
+        "types": "./dist/broadcast/index.d.cts",
+        "default": "./dist/broadcast/index.cjs"
+      }
+    },
+    "./transfers": {
+      "import": {
+        "types": "./dist/transfers/index.d.ts",
+        "default": "./dist/transfers/index.js"
+      },
+      "require": {
+        "types": "./dist/transfers/index.d.cts",
+        "default": "./dist/transfers/index.cjs"
+      }
+    },
+    "./package.json": "./package.json",
+    "./web-agent": {
+      "import": {
+        "types": "./dist/web-agent/index.d.ts",
+        "default": "./dist/web-agent/index.js"
+      },
+      "require": {
+        "types": "./dist/web-agent/index.d.cts",
+        "default": "./dist/web-agent/index.cjs"
+      }
+    }
+  },
+  "typesVersions": {
+    "*": {
+      "rooms": [
+        "./dist/rooms/index.d.ts"
+      ],
+      "broadcast": [
+        "./dist/broadcast/index.d.ts"
+      ],
+      "transfers": [
+        "./dist/transfers/index.d.ts"
+      ],
+      "web-agent": [
+        "./dist/web-agent/index.d.ts"
+      ]
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "package:check": "publint && attw --pack . --profile node16"
+  },
+  "keywords": [
+    "beam",
+    "beam-network",
+    "webrtc",
+    "rooms",
+    "broadcast",
+    "transfer",
+    "sdk",
+    "browser"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Beam-Network/beam-sdk-public.git",
+    "directory": "packages/web-sdk"
+  },
+  "homepage": "https://github.com/Beam-Network/beam-sdk-public#readme",
+  "bugs": {
+    "url": "https://github.com/Beam-Network/beam-sdk-public/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "devDependencies": {
+    "@arethetypeswrong/cli": "^0.18.2",
+    "happy-dom": "^15.11.7",
+    "publint": "^0.3.2",
+    "tsup": "^8.3.5",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
+  }
+}

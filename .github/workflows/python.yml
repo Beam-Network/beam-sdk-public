@@ -1,0 +1,42 @@
+name: Python SDK CI
+
+on:
+  push:
+    branches: [main, dev]
+    paths:
+      - "sdks/python/**"
+      - ".github/workflows/python.yml"
+  pull_request:
+    paths:
+      - "sdks/python/**"
+      - ".github/workflows/python.yml"
+
+defaults:
+  run:
+    working-directory: sdks/python
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]"
+      - run: ruff check beam_network_sdk/
+      - run: ruff format --check beam_network_sdk/
+      - run: mypy beam_network_sdk/
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -e ".[dev]"
+      - run: python -m unittest discover -s tests

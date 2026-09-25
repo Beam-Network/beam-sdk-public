@@ -1,0 +1,38 @@
+openapi: 3.1.0
+info:
+  title: BEAM Core API
+  version: 0.6.0
+  description: Non-lifecycle BeamCore HTTP contract. SDK transfer lifecycle traffic uses Core NATS request/reply.
+servers:
+  - url: https://beamcore.b1m.ai
+    description: Production
+security:
+  - ApiKeyAuth: []
+paths:
+  /health:
+    get:
+      operationId: getHealth
+      summary: Get BeamCore health.
+      responses:
+        "200":
+          description: Health status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NetworkHealth"
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+  schemas:
+    NetworkHealth:
+      type: object
+      required:
+        - status
+      properties:
+        status:
+          type: string
+        version:
+          type: string

@@ -1,0 +1,26 @@
+{
+  "name": "@beam-network/zapier",
+  "version": "1.0.1",
+  "private": true,
+  "description": "Beam integration for the Zapier platform.",
+  "license": "UNLICENSED",
+  "main": "index.js",
+  "scripts": {
+    "lint": "tsc --noEmit",
+    "push": "zapier-platform push",
+    "register": "zapier-platform register",
+    "test": "node --test test/",
+    "typecheck": "tsc --noEmit",
+    "validate": "zapier-platform validate"
+  },
+  "dependencies": {
+    "zapier-platform-core": "19.1.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2",
+    "zapier-platform-schema": "19.1.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "name": "beam-sdk-monorepo",
+  "private": true,
+  "version": "0.0.0",
+  "license": "MIT",
+  "description": "Monorepo for BEAM SDK packages across Python, TypeScript, and Go.",
+  "workspaces": [
+    "packages/cli",
+    "packages/vscode",
+    "packages/web-sdk",
+    "packages/web-sdk-server",
+    "sdks/typescript",
+    "examples/rooms-and-broadcast"
+  ],
+  "scripts": {
+    "build": "npm run build -w @beam-network/sdk && npm run build -w @beam-network/cli && npm run build -w @beam-network/vscode && npm run build:web",
+    "build:web": "npm run build -w @beam-network/web-sdk && npm run build -w @beam-network/web-sdk-server",
+    "test": "npm run test:python && npm run test:typescript && npm run test:go && npm run test:rust",
+    "test:python": "cd sdks/python && (python -m unittest discover -s tests || ../../python/.venv/bin/python -m unittest discover -s tests)",
+    "test:typescript": "npm run test -w @beam-network/sdk && npm run test -w @beam-network/cli && npm run test -w @beam-network/vscode && npm run test:web",
+    "test:web": "npm run test -w @beam-network/web-sdk && npm run test -w @beam-network/web-sdk-server",
+    "test:go": "cd sdks/go && CGO_ENABLED=0 go test ./...",
+    "test:rust": "cd sdks/rust && cargo test",
+    "lint": "npm run lint:python && npm run lint:typescript && npm run lint:go && npm run lint:rust",
+    "lint:python": "cd sdks/python && (python -m ruff check beam_network_sdk || ../../python/.venv/bin/python -m ruff check beam_network_sdk)",
+    "lint:typescript": "npm run lint -w @beam-network/sdk && npm run lint -w @beam-network/cli && npm run lint -w @beam-network/vscode && npm run lint:web",
+    "lint:web": "npm run typecheck -w @beam-network/web-sdk && npm run typecheck -w @beam-network/web-sdk-server && eslint .",
+    "lint:go": "cd sdks/go && test -z \"$(gofmt -l .)\"",
+    "lint:rust": "cd sdks/rust && cargo fmt --check",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "package:check": "npm run package:check -w @beam-network/web-sdk && npm run package:check -w @beam-network/web-sdk-server"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@beam-network/sdk": "0.5.16"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.17.0",
+    "@vitest/coverage-v8": "^2.1.8",
+    "eslint": "^9.17.0",
+    "prettier": "^3.4.2",
+    "typescript-eslint": "^8.19.1"
+  }
+}
