@@ -87,6 +87,7 @@ type natsControl struct {
 	recoveryLeases    map[string]*recoveryLease
 	recoveryRunning   map[string]*recoveryRun
 	recoveryRequested map[string][2]string
+	performanceV2     map[int]time.Time
 	runtimeEpochs     map[int][2]string
 	helloMonitors     map[int]context.CancelFunc
 	backgroundCtx     context.Context
@@ -416,6 +417,7 @@ func (c *natsControl) requestAttempt(
 		}
 		return isRetryableNATSError(err), err
 	}
+	encodeStarted := time.Now()
 	data, err := marshalMsgpack(map[string]any{
 		"message_id":     fmt.Sprintf("%s:%s:%s:%s:%s", transferClientSchemaVersion, c.environment, c.keyPrefix, messageType, requestID),
 		"schema_version": transferClientSchemaVersion,
@@ -431,6 +433,10 @@ func (c *natsControl) requestAttempt(
 	})
 	if err != nil {
 		return false, err
+	}
+	if metrics := performanceFromContext(ctx); metrics != nil && messageType == "transfer.route_stream.batch" {
+		metrics.observe("sdk.batch_encode", encodeStarted)
+		metrics.gauge("batch_bytes_max", float64(len(data)))
 	}
 	if len(data) > c.maxPayloadBytes {
 		return false, fmt.Errorf("NATS lifecycle request is %d bytes, above maxPayloadBytes=%d", len(data), c.maxPayloadBytes)
@@ -448,6 +454,21 @@ func (c *natsControl) requestAttempt(
 	}
 	c.observeRuntimeEpochs(shardID, decoded)
 	if ok, _ := decoded["ok"].(bool); ok {
+		if messageType == "runtime.hello" {
+			payload, _ := decoded["payload"].(map[string]any)
+			capabilities, _ := payload["capabilities"].([]any)
+			c.recoveryMu.Lock()
+			if c.performanceV2 == nil {
+				c.performanceV2 = map[int]time.Time{}
+			}
+			delete(c.performanceV2, shardID)
+			for _, capability := range capabilities {
+				if capability == "sdk-performance/v2" {
+					c.performanceV2[shardID] = time.Now().Add(15 * time.Second)
+				}
+			}
+			c.recoveryMu.Unlock()
+		}
 		if output == nil {
 			return false, nil
 		}
@@ -645,6 +666,9 @@ func (c *natsControl) observeRuntimeEpochs(shardID int, envelope map[string]any)
 	previous, existed := c.runtimeEpochs[shardID]
 	current := [2]string{runtimeEpoch, transportEpoch}
 	c.runtimeEpochs[shardID] = current
+	if previous != current {
+		delete(c.performanceV2, shardID)
+	}
 	changed := existed && previous != current
 	runs := make([]*recoveryRun, 0)
 	if changed {
@@ -674,7 +698,7 @@ func (c *natsControl) monitorRuntime(ctx context.Context, shardID int) {
 	defer ticker.Stop()
 	for {
 		requestCtx, cancel := context.WithTimeout(ctx, c.requestTimeout)
-		if err := c.requestOnShard(requestCtx, "runtime.hello", map[string]any{"capabilities": []string{"integrity-signing/v1"}}, "", shardID, nil, fmt.Sprintf("runtime-hello:%d:integrity", shardID)); err != nil {
+		if err := c.requestOnShard(requestCtx, "runtime.hello", map[string]any{"capabilities": []string{"integrity-signing/v1", "sdk-performance/v2"}}, "", shardID, nil, fmt.Sprintf("runtime-hello:%d:integrity", shardID)); err != nil {
 			_ = c.requestOnShard(requestCtx, "runtime.hello", map[string]any{}, "", shardID, nil, fmt.Sprintf("runtime-hello:%d", shardID))
 		}
 		cancel()
@@ -1169,4 +1193,10 @@ func decodeJWTClaims(token string) (sdkAuthClaims, error) {
 	}
 	var claims sdkAuthClaims
 	return claims, json.Unmarshal(payload, &claims)
+}
+
+func (c *natsControl) supportsPerformanceV2(transferID string) bool {
+	c.recoveryMu.Lock()
+	defer c.recoveryMu.Unlock()
+	return time.Now().Before(c.performanceV2[transferShardID(transferID, c.shardCount)])
 }

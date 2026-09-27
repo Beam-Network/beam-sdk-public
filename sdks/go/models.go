@@ -117,13 +117,21 @@ type PerformanceEvent struct {
 	LastMs  float64 `json:"last_ms"`
 }
 type PerformanceCounters struct {
-	SourceSignatures uint64 `json:"source_signatures"`
-	SourceReuses     uint64 `json:"source_reuses"`
-	RouteBatches     uint64 `json:"route_batches"`
+	SourceSignatures uint64  `json:"source_signatures"`
+	SourceReuses     uint64  `json:"source_reuses"`
+	SourceRenewals   *uint64 `json:"source_renewals,omitempty"`
+	RouteBatches     uint64  `json:"route_batches"`
 }
 
 // TransferPerformance separates elapsed time from work that can overlap.
+type RecoveryBandwidthPerformance struct {
+	ExcludedTasks uint64 `json:"excluded_tasks"`
+	AcceptedBytes uint64 `json:"accepted_bytes"`
+}
 type TransferPerformance struct {
+	RecoveryBandwidth *RecoveryBandwidthPerformance     `json:"recovery_bandwidth,omitempty"`
+	SDKDetail         *SDKPerformanceSummary            `json:"sdk_detail,omitempty"`
+	Deadline          *AssignmentDeadlinePerformance    `json:"deadline,omitempty"`
 	SchemaVersion     string                            `json:"schema_version"`
 	RuntimeEpoch      string                            `json:"runtime_epoch"`
 	Coverage          string                            `json:"coverage"`
@@ -135,6 +143,17 @@ type TransferPerformance struct {
 	Unmeasured        []string                          `json:"unmeasured,omitempty"`
 	MeasurementClocks map[string]string                 `json:"measurement_clocks,omitempty"`
 	SDKReportReceived *bool                             `json:"sdk_report_received,omitempty"`
+}
+
+type AssignmentDeadlinePerformance struct {
+	Version        string            `json:"version"`
+	Decisions      uint64            `json:"decisions"`
+	SelectedMinMs  float64           `json:"selected_min_ms"`
+	SelectedMaxMs  float64           `json:"selected_max_ms"`
+	EstimatedMaxMs float64           `json:"estimated_max_ms"`
+	SampleCountMax uint64            `json:"sample_count_max"`
+	DataAgeMaxMs   *float64          `json:"data_age_max_ms"`
+	Reasons        map[string]uint64 `json:"reasons"`
 }
 
 type TransferStatusInfo struct {
@@ -441,6 +460,7 @@ type AttachSignedURLsResponse struct {
 }
 
 type S3ProviderSource struct {
+	StorageLocation string `json:"storage_location,omitempty"`
 	Provider        string `json:"provider"`
 	SourceID        string `json:"source_id,omitempty"`
 	Bucket          string `json:"bucket"`
@@ -456,6 +476,7 @@ type S3ProviderSource struct {
 }
 
 type R2ProviderSource struct {
+	StorageLocation string `json:"storage_location,omitempty"`
 	Provider        string `json:"provider"`
 	SourceID        string `json:"source_id,omitempty"`
 	Bucket          string `json:"bucket"`
@@ -474,6 +495,7 @@ type R2ProviderSource struct {
 // provider requires EndpointURL and uses path-style addressing unless
 // ForcePathStyle is set to false.
 type S3CompatibleProviderSource struct {
+	StorageLocation string `json:"storage_location,omitempty"`
 	Provider        string `json:"provider"`
 	Driver          string `json:"driver,omitempty"`
 	SourceID        string `json:"source_id,omitempty"`
@@ -490,6 +512,7 @@ type S3CompatibleProviderSource struct {
 
 // S3CompatibleProviderDestination is the destination form of S3CompatibleProviderSource.
 type S3CompatibleProviderDestination struct {
+	StorageLocation string `json:"storage_location,omitempty"`
 	Provider        string `json:"provider"`
 	Driver          string `json:"driver,omitempty"`
 	DestinationID   string `json:"destination_id,omitempty"`
@@ -505,12 +528,13 @@ type S3CompatibleProviderDestination struct {
 }
 
 type HippiusProviderSource struct {
-	Provider string `json:"provider"`
-	SourceID string `json:"source_id,omitempty"`
-	Bucket   string `json:"bucket"`
-	Key      string `json:"key"`
-	APIToken string `json:"api_token"`
-	BaseURL  string `json:"base_url,omitempty"`
+	StorageLocation string `json:"storage_location,omitempty"`
+	Provider        string `json:"provider"`
+	SourceID        string `json:"source_id,omitempty"`
+	Bucket          string `json:"bucket"`
+	Key             string `json:"key"`
+	APIToken        string `json:"api_token"`
+	BaseURL         string `json:"base_url,omitempty"`
 }
 
 // HuggingFaceProviderSource is an SDK-only Hugging Face Hub source configuration.
@@ -518,35 +542,39 @@ type HippiusProviderSource struct {
 // The token stays local: the SDK resolves the file to the Hub's presigned CDN URL and sends
 // only that URL to BeamCore.
 type HuggingFaceProviderSource struct {
-	Provider string `json:"provider"`
-	SourceID string `json:"source_id,omitempty"`
-	RepoID   string `json:"repo_id"`
-	Path     string `json:"path"`
-	RepoType string `json:"repo_type,omitempty"`
-	Revision string `json:"revision,omitempty"`
-	Token    string `json:"token"`
-	Endpoint string `json:"endpoint,omitempty"`
+	StorageLocation string `json:"storage_location,omitempty"`
+	Provider        string `json:"provider"`
+	SourceID        string `json:"source_id,omitempty"`
+	RepoID          string `json:"repo_id"`
+	Path            string `json:"path"`
+	RepoType        string `json:"repo_type,omitempty"`
+	Revision        string `json:"revision,omitempty"`
+	Token           string `json:"token"`
+	Endpoint        string `json:"endpoint,omitempty"`
 }
 
 type GCSProviderSource struct {
-	Provider  string `json:"provider"`
-	SourceID  string `json:"source_id,omitempty"`
-	Bucket    string `json:"bucket"`
-	Key       string `json:"key"`
-	ProjectID string `json:"project_id,omitempty"`
+	StorageLocation string `json:"storage_location,omitempty"`
+	Provider        string `json:"provider"`
+	SourceID        string `json:"source_id,omitempty"`
+	Bucket          string `json:"bucket"`
+	Key             string `json:"key"`
+	ProjectID       string `json:"project_id,omitempty"`
 }
 
 type AzureProviderSource struct {
-	Provider    string `json:"provider"`
-	SourceID    string `json:"source_id,omitempty"`
-	Container   string `json:"container"`
-	Blob        string `json:"blob"`
-	AccountName string `json:"account_name"`
-	AccountKey  string `json:"account_key,omitempty"`
-	SASToken    string `json:"sas_token,omitempty"`
+	StorageLocation string `json:"storage_location,omitempty"`
+	Provider        string `json:"provider"`
+	SourceID        string `json:"source_id,omitempty"`
+	Container       string `json:"container"`
+	Blob            string `json:"blob"`
+	AccountName     string `json:"account_name"`
+	AccountKey      string `json:"account_key,omitempty"`
+	SASToken        string `json:"sas_token,omitempty"`
 }
 
 type S3ProviderDestination struct {
+	StorageLocation string `json:"storage_location,omitempty"`
 	Provider        string `json:"provider"`
 	DestinationID   string `json:"destination_id,omitempty"`
 	Bucket          string `json:"bucket"`
@@ -562,6 +590,7 @@ type S3ProviderDestination struct {
 }
 
 type R2ProviderDestination struct {
+	StorageLocation string `json:"storage_location,omitempty"`
 	Provider        string `json:"provider"`
 	DestinationID   string `json:"destination_id,omitempty"`
 	Bucket          string `json:"bucket"`
@@ -573,16 +602,18 @@ type R2ProviderDestination struct {
 }
 
 type HippiusProviderDestination struct {
-	Provider      string `json:"provider"`
-	DestinationID string `json:"destination_id,omitempty"`
-	Bucket        string `json:"bucket"`
-	Key           string `json:"key"`
-	APIToken      string `json:"api_token"`
-	BaseURL       string `json:"base_url,omitempty"`
+	StorageLocation string `json:"storage_location,omitempty"`
+	Provider        string `json:"provider"`
+	DestinationID   string `json:"destination_id,omitempty"`
+	Bucket          string `json:"bucket"`
+	Key             string `json:"key"`
+	APIToken        string `json:"api_token"`
+	BaseURL         string `json:"base_url,omitempty"`
 }
 
 // HuggingFaceProviderDestination is an SDK-only Hugging Face Hub destination configuration.
 type HuggingFaceProviderDestination struct {
+	StorageLocation   string `json:"storage_location,omitempty"`
 	Provider          string `json:"provider"`
 	DestinationID     string `json:"destination_id,omitempty"`
 	RepoID            string `json:"repo_id"`
@@ -600,19 +631,21 @@ type HuggingFaceProviderDestination struct {
 }
 
 type GCSProviderDestination struct {
-	Provider      string `json:"provider"`
-	DestinationID string `json:"destination_id,omitempty"`
-	Bucket        string `json:"bucket"`
-	Key           string `json:"key"`
-	ProjectID     string `json:"project_id,omitempty"`
+	StorageLocation string `json:"storage_location,omitempty"`
+	Provider        string `json:"provider"`
+	DestinationID   string `json:"destination_id,omitempty"`
+	Bucket          string `json:"bucket"`
+	Key             string `json:"key"`
+	ProjectID       string `json:"project_id,omitempty"`
 }
 
 type AzureProviderDestination struct {
-	Provider      string `json:"provider"`
-	DestinationID string `json:"destination_id,omitempty"`
-	Container     string `json:"container"`
-	Blob          string `json:"blob"`
-	AccountName   string `json:"account_name"`
-	AccountKey    string `json:"account_key,omitempty"`
-	SASToken      string `json:"sas_token,omitempty"`
+	StorageLocation string `json:"storage_location,omitempty"`
+	Provider        string `json:"provider"`
+	DestinationID   string `json:"destination_id,omitempty"`
+	Container       string `json:"container"`
+	Blob            string `json:"blob"`
+	AccountName     string `json:"account_name"`
+	AccountKey      string `json:"account_key,omitempty"`
+	SASToken        string `json:"sas_token,omitempty"`
 }

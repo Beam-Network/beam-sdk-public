@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"sync"
+	"time"
 )
 
 type providerClientsKey struct{}
@@ -28,6 +29,16 @@ func (p *providerClients) retire() {
 	p.retired = true
 }
 func cachedProviderClient(ctx context.Context, identity []string, create func() *s3.Client) *s3.Client {
+	rawCreate := create
+	create = func() *s3.Client {
+		start := time.Now()
+		client := rawCreate()
+		if metrics := performanceFromContext(ctx); metrics != nil {
+			metrics.observe("sdk.provider_client_setup", start)
+			metrics.increment("provider_clients_created")
+		}
+		return client
+	}
 	p, ok := ctx.Value(providerClientsKey{}).(*providerClients)
 	if !ok || p == nil {
 		return create()
@@ -40,6 +51,9 @@ func cachedProviderClient(ctx context.Context, identity []string, create func() 
 		return create()
 	}
 	if client := p.values[key]; client != nil {
+		if metrics := performanceFromContext(ctx); metrics != nil {
+			metrics.increment("provider_clients_reused")
+		}
 		return client
 	}
 	client := create()

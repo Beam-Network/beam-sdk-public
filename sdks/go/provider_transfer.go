@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -47,6 +48,7 @@ type providerResume struct {
 // epoch changes, and route recovery signing, and is scrubbed when the recovery
 // lease is released.
 type providerTransferSession struct {
+	sourceHistory            *sourceSignatureHistory
 	clients                  *providerClients
 	telemetry                *sdkPerformance
 	client                   *Client
@@ -155,6 +157,7 @@ func (client *Client) executeProviderTransfer(ctx context.Context, input provide
 	}()
 	ctx = withProviderClients(ctx, clients)
 	telemetry := newSDKPerformance()
+	ctx = context.WithValue(ctx, performanceContextKey{}, telemetry)
 	sources := append([]ProviderSource(nil), input.sources...)
 	destinations := append([]ProviderDestination(nil), input.destinations...)
 
@@ -262,7 +265,8 @@ func (client *Client) executeProviderTransfer(ctx context.Context, input provide
 	}
 
 	session := &providerTransferSession{
-		clients: clients, telemetry: telemetry,
+		sourceHistory: &sourceSignatureHistory{incomplete: resume != nil},
+		clients:       clients, telemetry: telemetry,
 		client:                   client,
 		prepared:                 prepared,
 		expiresIn:                expiresIn,
@@ -402,6 +406,7 @@ func (session *providerTransferSession) streamRoutes(baseCtx context.Context, ro
 	}
 	results := make(chan routeResult, max(client.routeSigningConcurrency, maxRouteSigningConcurrency))
 	pendingRoutes := 0
+	var activeSigning atomic.Int32
 	var stream *routeStreamSender
 	beginAttempted := false
 	var manifest *multipartManifestTask
@@ -417,6 +422,13 @@ func (session *providerTransferSession) streamRoutes(baseCtx context.Context, ro
 		if !recoveryReplay && session.telemetry != nil {
 			stream.telemetry = session.telemetry
 		}
+		stream.telemetry.sourceHistory = session.sourceHistory
+		streamCtx = context.WithValue(streamCtx, performanceContextKey{}, stream.telemetry)
+		createCtx = context.WithValue(createCtx, performanceContextKey{}, stream.telemetry)
+		stream.telemetry.gauge("signing_configured_limit", float64(client.routeSigningConcurrency))
+		stream.telemetry.gauge("multipart_configured_limit", float64(client.multipartControlConcurrency))
+		stream.telemetry.gauge("signing_limit", float64(client.routeSigningConcurrency))
+		stream.telemetry.gauge("multipart_limit", float64(client.multipartControlConcurrency))
 		beginAttempted = true
 		if err := stream.begin(streamCtx); err != nil {
 			return err
@@ -431,7 +443,9 @@ func (session *providerTransferSession) streamRoutes(baseCtx context.Context, ro
 		signedInWindow := 0
 		windowStartedAt := time.Now()
 		flushCompletedRoute := func() error {
+			producerStarted := time.Now()
 			result := <-results
+			stream.telemetry.observe("sdk.producer_wait", producerStarted)
 			pendingRoutes--
 			if result.err != nil {
 				return result.err
@@ -446,6 +460,8 @@ func (session *providerTransferSession) streamRoutes(baseCtx context.Context, ro
 			if signedInWindow == routeStreamBatchRoutes {
 				if !client.routeSigningConcurrencyOverridden && time.Since(windowStartedAt) > 4*time.Second && signingConcurrency < maxRouteSigningConcurrency {
 					signingConcurrency = min(maxRouteSigningConcurrency, signingConcurrency*2)
+					stream.telemetry.increment("concurrency_changes")
+					stream.telemetry.gauge("signing_limit", float64(signingConcurrency))
 				}
 				signedInWindow = 0
 				windowStartedAt = time.Now()
@@ -466,11 +482,15 @@ func (session *providerTransferSession) streamRoutes(baseCtx context.Context, ro
 				return err
 			}
 			sourceFuture := &sourceChunkFuture{}
-			stream.telemetry.source(len(chunk.Destinations) - 1)
 			for _, target := range chunk.Destinations {
 				pendingRoutes++
+				stream.telemetry.gauge("signing_pending_peak", float64(pendingRoutes))
+				queuedAt := time.Now()
 				go func(chunk ChunkSigningPlanItem, target ChunkDestinationSigningTarget) {
 					started := time.Now()
+					stream.telemetry.observe("sdk.signing_queue", queuedAt)
+					stream.telemetry.gauge("signing_active_peak", float64(activeSigning.Add(1)))
+					defer activeSigning.Add(-1)
 					grant, err := sourceFuture.get(streamCtx, session, chunk)
 					var route SignedChunkRoute
 					if err == nil {
@@ -570,11 +590,13 @@ func (session *providerTransferSession) signPlannedRoute(ctx context.Context, ch
 		if future == nil {
 			return SignedChunkRoute{}, fmt.Errorf("multipart group manifest is missing for %s:%s", chunk.SourceID, target.DestinationID)
 		}
+		waitDone := performancePhase(ctx, "sdk.multipart_ready_wait")
 		select {
 		case <-future.done:
 		case <-ctx.Done():
 			return SignedChunkRoute{}, context.Cause(ctx)
 		}
+		waitDone()
 		if future.err != nil {
 			return SignedChunkRoute{}, future.err
 		}
@@ -668,16 +690,21 @@ func (session *providerTransferSession) startMultipartGroupManifest(streamCtx co
 		indexByGroup[job.groupID] = index
 	}
 	var workers sync.WaitGroup
+	var activeMultipart atomic.Int32
+	queuedAt := time.Now()
 	for worker := 0; worker < min(max(1, session.client.multipartControlConcurrency), len(jobs)); worker++ {
 		workers.Add(1)
 		go func() {
 			defer workers.Done()
 			for job := range queue {
+				stream.telemetry.observe("sdk.multipart_queue", queuedAt)
+				stream.telemetry.gauge("multipart_active_peak", float64(activeMultipart.Add(1)))
 				var state multipartUploadState
 				err := context.Cause(streamCtx)
 				if streamCtx.Err() == nil {
 					state, err = session.setupMultipartGroup(streamCtx, createCtx, stream, job)
 				}
+				activeMultipart.Add(-1)
 				future := task.futures[job.groupID]
 				future.state, future.err = state, err
 				close(future.done)
@@ -720,6 +747,7 @@ func (session *providerTransferSession) setupMultipartGroup(streamCtx context.Co
 		started := time.Now()
 		uploadID, err = createMultipartUpload(ctx, job.destination, job.finalObjectKey, finalObjectMetadata)
 		stream.telemetry.observe("sdk.multipart_create", started)
+		stream.telemetry.observe("sdk.multipart_provider", started)
 		cancel()
 		if err != nil {
 			return multipartUploadState{}, err
@@ -752,7 +780,10 @@ func (session *providerTransferSession) publishMultipartGroup(ctx context.Contex
 		return err
 	}
 	if session.onMultipartGroupReady != nil {
-		if err := session.onMultipartGroupReady(ctx, multipartGroupIdentity(session.prepared.TransferID, state.Manifest)); err != nil {
+		started := time.Now()
+		err := session.onMultipartGroupReady(ctx, multipartGroupIdentity(session.prepared.TransferID, state.Manifest))
+		stream.telemetry.observe("sdk.multipart_callback", started)
+		if err != nil {
 			return err
 		}
 	}
