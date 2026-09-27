@@ -24,6 +24,7 @@ type sourceChunkFuture struct {
 }
 
 func signSourceChunk(ctx context.Context, httpClient *http.Client, source ProviderSource, chunk ChunkSigningPlanItem, expiresIn time.Duration) (*sourceChunkGrant, error) {
+	defer performancePhase(ctx, "sdk.source_signing")()
 	expiresAt := time.Now().UTC().Add(expiresIn)
 	url, headers, err := signSourceRoute(ctx, httpClient, source, chunk, expiresIn)
 	if err != nil {
@@ -32,9 +33,21 @@ func signSourceChunk(ctx context.Context, httpClient *http.Client, source Provid
 	return &sourceChunkGrant{url: url, headers: headers, expiresAt: boundedGrantExpiry(url, expiresAt)}, nil
 }
 func (future *sourceChunkFuture) get(ctx context.Context, session *providerTransferSession, chunk ChunkSigningPlanItem) (*sourceChunkGrant, error) {
+	defer performancePhase(ctx, "sdk.source_grant_wait")()
+	created := false
 	future.once.Do(func() {
+		created = true
 		future.grant, future.err = signSourceChunk(ctx, session.client.httpClient, session.source(chunk.SourceID), chunk, session.expiresIn)
 	})
+	if p := performanceFromContext(ctx); p != nil && future.err == nil {
+		if created {
+			p.sourceCreated(chunk.ChunkIndex)
+		} else {
+			p.mu.Lock()
+			p.counters.SourceReuses++
+			p.mu.Unlock()
+		}
+	}
 	return future.grant, future.err
 }
 

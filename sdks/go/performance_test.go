@@ -47,3 +47,38 @@ func TestSourceGrantSharedAcrossConcurrentDestinations(t *testing.T) {
 		t.Fatal("new generation reused previous grant")
 	}
 }
+
+func TestSourceRenewalHistoryBoundAndLegacyShape(t *testing.T) {
+	history := &sourceSignatureHistory{}
+	initial := newSDKPerformance()
+	initial.sourceHistory = history
+	initial.sourceCreated(0)
+	initial.sourceCreated(131071)
+	if n := initial.snapshot(true).Counters.SourceRenewals; n == nil || *n != 0 {
+		t.Fatal("initial signatures counted as renewals")
+	}
+	if initial.snapshot().Counters.SourceRenewals != nil {
+		t.Fatal("v1 changed")
+	}
+	replay := newSDKPerformance()
+	replay.sourceHistory = history
+	replay.sourceCreated(131071)
+	replay.sourceCreated(1)
+	replay.observeDuration("sdk.producer_wait", 3*time.Millisecond)
+	if n := replay.snapshot(true).Counters.SourceRenewals; n == nil || *n != 1 {
+		t.Fatal("renewal not counted")
+	}
+	if replay.snapshot(true).Counters.SourceSignatures != 2 {
+		t.Fatal("creation count changed")
+	}
+	replay.sourceCreated(131072)
+	if replay.snapshot(true).Counters.SourceRenewals != nil {
+		t.Fatal("incomplete history represented as complete")
+	}
+	resumed := newSDKPerformance()
+	resumed.sourceHistory = &sourceSignatureHistory{incomplete: true}
+	resumed.sourceCreated(0)
+	if resumed.snapshot(true).Counters.SourceRenewals != nil {
+		t.Fatal("takeover history represented as known")
+	}
+}

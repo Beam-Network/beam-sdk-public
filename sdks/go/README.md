@@ -226,3 +226,24 @@ The multipart limits are exported as `MultipartMaxPartNumber` (10,000), `Multipa
 Route streaming flushes at 1,024 routes, with no timer, and sends the final partial batch at stream completion. Signing overlaps acknowledged publication through bounded buffering; existing encoded-payload limits still apply. A source grant is reused across destinations only within the same signing generation and actual expiry.
 
 The optional `WithDiagnostics` callback receives bounded preparation measurements and source-grant reuse counts. Callbacks are best effort, may be dropped under load, and do not affect transfer outcomes. Durations may overlap; do not sum them into elapsed transfer time. Transfer status also exposes a typed `performance` summary when supported by Core.
+
+Optional `storage_location` (`StorageLocation` in Go) describes the physical
+storage location. It is separate from the region used to sign provider requests.
+Leave it unset when unknown; a signing region such as R2's `auto` is not a location.
+
+When supported by Core, diagnostics use `sdk-performance/v2`: bounded histograms,
+preparation milestones, concurrency high-water marks, and separate provider,
+callback, manifest, signing, and transport waits. Histogram bins are noncumulative,
+with upper bounds in milliseconds of 0.1, 0.5, 1, 2, 5, 10, 25, 50, 100, 250,
+500, 1000, 2500, 5000, 10000, 30000, 120000, then overflow. `unmeasured` explicitly
+identifies unavailable measurements. Process CPU includes other concurrent work
+in the SDK process; it is not transfer-exclusive CPU. Detailed reporting can be
+disabled with `BEAM_SDK_PERFORMANCE_DETAILS=false`. Older peers retain v1 reports.
+No credentials or storage grants are included in these diagnostics.
+
+`sdk.producer_wait` measures waiting for a signed route separately from publication
+backpressure. Configured-limit gauges preserve starting limits; effective-limit
+gauges report the highest limit reached. Optional `source_renewals` counts source
+grants recreated in later preparation generations. A bounded 16 KiB history tracks
+131,072 chunk indices; the counter is omitted after takeover or beyond that bound.
+It does not include separate recovery-control signing operations.

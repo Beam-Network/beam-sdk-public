@@ -85,6 +85,7 @@ func directPutRouteMetadata(metadata map[string]any) map[string]any {
 }
 
 func (client *Client) signProviderRoute(ctx context.Context, input providerRouteInput) (SignedChunkRoute, error) {
+	defer performancePhase(ctx, "sdk.destination_signing")()
 	if _, huggingFace := input.destination.(HuggingFaceProviderDestination); huggingFace {
 		state := input.huggingFaceUpload
 		if state == nil {
@@ -308,7 +309,11 @@ func prepareProviderSource(
 	}
 	if s3Compatible {
 		client := s3ClientForContext(ctx, settings)
+		metadataStarted := time.Now()
 		head, err := client.HeadObject(ctx, &s3.HeadObjectInput{Bucket: aws.String(settings.bucket), Key: aws.String(settings.key)})
+		if metrics := performanceFromContext(ctx); metrics != nil {
+			metrics.observe("sdk.metadata_request", metadataStarted)
+		}
 		if err != nil {
 			return PreparedHTTPSource{}, err
 		}
@@ -343,7 +348,7 @@ func prepareProviderSource(
 			URL:      metadata.URL,
 			Size:     metadata.Size,
 			Filename: path.Base(config.Path),
-			Metadata: huggingFaceMetadata(config, metadata.ETag, metadata.CommitHash),
+			Metadata: withStorageLocation(huggingFaceMetadata(config, metadata.ETag, metadata.CommitHash), source.StorageLocation),
 		}, nil
 	case HippiusProviderSource:
 		baseURL := defaultString(source.BaseURL, "https://api.hippius.com")
@@ -363,7 +368,7 @@ func prepareProviderSource(
 			Size:      size,
 			Filename:  path.Base(source.Key),
 			ExpiresAt: time.Now().UTC().Add(expiresIn).Format(time.RFC3339Nano),
-			Metadata:  map[string]any{"bucket": source.Bucket, "key": source.Key, "base_url": baseURL},
+			Metadata:  withStorageLocation(map[string]any{"bucket": source.Bucket, "key": source.Key, "base_url": baseURL}, source.StorageLocation),
 		}, nil
 	default:
 		return PreparedHTTPSource{}, fmt.Errorf("provider source signing is not implemented for %T", source)
@@ -377,6 +382,9 @@ func s3CompatibleMetadata(settings s3Settings) map[string]any {
 		"bucket": settings.bucket,
 		"key":    settings.key,
 		"region": settings.region,
+	}
+	if settings.storageLocation != "" {
+		metadata["storage_location"] = settings.storageLocation
 	}
 	if settings.endpoint != "" {
 		metadata["endpoint_url"] = settings.endpoint
@@ -440,10 +448,10 @@ func prepareProviderDestination(destination ProviderDestination, index int) (Pre
 			DestinationID: defaultID(destination.DestinationID, "dst", index),
 			Provider:      "huggingface",
 			LogicalPrefix: config.Path,
-			Metadata:      huggingFaceMetadata(config, "", ""),
+			Metadata:      withStorageLocation(huggingFaceMetadata(config, "", ""), destination.StorageLocation),
 		}, nil
 	case HippiusProviderDestination:
-		metadata := map[string]any{"bucket": destination.Bucket, "key": destination.Key, "base_url": defaultString(destination.BaseURL, "https://api.hippius.com")}
+		metadata := withStorageLocation(map[string]any{"bucket": destination.Bucket, "key": destination.Key, "base_url": defaultString(destination.BaseURL, "https://api.hippius.com")}, destination.StorageLocation)
 		return PreparedDestination{
 			DestinationID: defaultID(destination.DestinationID, "dst", index),
 			Provider:      "hippius",
@@ -884,4 +892,11 @@ func isDirectPutDestination(destination ProviderDestination) bool {
 	default:
 		return false
 	}
+}
+
+func withStorageLocation(metadata map[string]any, location string) map[string]any {
+	if location != "" {
+		metadata["storage_location"] = location
+	}
+	return metadata
 }

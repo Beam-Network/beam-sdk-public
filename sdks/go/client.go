@@ -680,6 +680,8 @@ func (s *routeStreamSender) begin(ctx context.Context) error {
 }
 
 func (s *routeStreamSender) addRoute(ctx context.Context, route SignedChunkRoute) error {
+	started := time.Now()
+	s.telemetry.mark("first_route_ms")
 	deliveryIndex, present := signedRouteDeliveryIndex(route)
 	if !present {
 		return fmt.Errorf("route delivery_index is required")
@@ -695,6 +697,12 @@ func (s *routeStreamSender) addRoute(ctx context.Context, route SignedChunkRoute
 	s.checksum.add(routeKeyForSignedRoute(route))
 	route.DeliveryIndex = &deliveryIndex
 	s.batch = append(s.batch, route)
+	s.telemetry.observe("sdk.route_assembly", started)
+	buffered := 1
+	if s.sendTail != nil {
+		buffered++
+	}
+	s.telemetry.gauge("buffered_batches_peak", float64(buffered))
 	if len(s.batch) >= routeStreamBatchRoutes {
 		if err := s.enqueueFlush(ctx); err != nil {
 			return err
@@ -706,6 +714,9 @@ func (s *routeStreamSender) addRoute(ctx context.Context, route SignedChunkRoute
 // addManifestGroups sends each multipart group as its own manifest request,
 // concurrently, so one group's controls never wait on another's.
 func (s *routeStreamSender) addManifestGroups(ctx context.Context, groups []MultipartGroupManifest) error {
+	started := time.Now()
+	defer s.telemetry.observe("sdk.manifest_ack", started)
+	defer s.telemetry.mark("first_manifest_ms")
 	if len(groups) == 0 {
 		return nil
 	}
@@ -736,6 +747,7 @@ func (s *routeStreamSender) addManifestGroups(ctx context.Context, groups []Mult
 }
 
 func (s *routeStreamSender) complete(ctx context.Context, output any) error {
+	s.telemetry.mark("final_flush_ms")
 	if s.routeCount != s.totalRoutes || len(s.seenDeliveryIndices) != s.totalRoutes {
 		return fmt.Errorf("route stream has incomplete or duplicate delivery indices: received %d of %d routes", s.routeCount, s.totalRoutes)
 	}
@@ -746,7 +758,12 @@ func (s *routeStreamSender) complete(ctx context.Context, output any) error {
 		return err
 	}
 	s.telemetry.observe("sdk.preparation", s.telemetry.started)
-	summary := s.telemetry.snapshot()
+	s.telemetry.mark("prepared_ms")
+	v2 := false
+	if control, ok := s.control.(interface{ supportsPerformanceV2(string) bool }); ok {
+		v2 = control.supportsPerformanceV2(s.transferID)
+	}
+	summary := s.telemetry.snapshot(v2)
 	if s.onDiagnostics != nil {
 		s.onDiagnostics(summary)
 	}
@@ -773,6 +790,8 @@ func (s *routeStreamSender) waitForPendingSend() error {
 }
 
 func (s *routeStreamSender) enqueueFlush(ctx context.Context) error {
+	ctx = context.WithValue(ctx, performanceContextKey{}, s.telemetry)
+	queuedAt := time.Now()
 	if len(s.batch) == 0 {
 		return nil
 	}
@@ -781,10 +800,12 @@ func (s *routeStreamSender) enqueueFlush(ctx context.Context) error {
 	}
 	routes := append([]SignedChunkRoute{}, s.batch...)
 	s.batch = s.batch[:0]
+	encodeStarted := time.Now()
 	chunks, err := s.control.splitRoutes("transfer.route_stream.batch", map[string]any{"transfer_id": s.transferID, "stream_id": s.streamID, "route_generation_id": s.routeGenerationID, "batch_id": s.streamID + ":estimate", "batch_index": s.batchIndex}, routes)
 	if err != nil {
 		return err
 	}
+	s.telemetry.observe("sdk.batch_encode", encodeStarted)
 	type scheduledChunk struct {
 		batchIndex int
 		routes     []SignedChunkRoute
@@ -799,10 +820,15 @@ func (s *routeStreamSender) enqueueFlush(ctx context.Context) error {
 	s.sendTail = done
 	go func() {
 		for _, item := range scheduled {
+			s.telemetry.observe("sdk.batch_queue", queuedAt)
+			checksumStarted := time.Now()
 			routeChecksum := checksumForRoutes(item.routes)
 			coordinateChecksum := checksumForRouteCoordinates(item.routes)
 			batchID := fmt.Sprintf("%s:%d:%s", s.streamID, item.batchIndex, coordinateChecksum)
 			started := time.Now()
+			s.telemetry.observe("sdk.batch_checksum", checksumStarted)
+			s.telemetry.gauge("batch_routes_max", float64(len(item.routes)))
+			s.telemetry.mark("first_batch_ms")
 			s.telemetry.batch()
 			if err := s.control.request(ctx, "transfer.route_stream.batch", map[string]any{
 				"transfer_id":         s.transferID,

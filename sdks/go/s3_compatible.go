@@ -27,6 +27,7 @@ const s3ClientCacheLimit = 256
 
 // s3Settings is a resolved S3-compatible provider configuration.
 type s3Settings struct {
+	storageLocation string
 	provider        string
 	id              string
 	bucket          string
@@ -52,17 +53,17 @@ func s3SettingsFor(config any) (s3Settings, bool, error) {
 	var raw s3Settings
 	switch typed := config.(type) {
 	case S3ProviderSource:
-		raw = s3Settings{provider: "s3", id: typed.SourceID, bucket: typed.Bucket, key: typed.Key, region: typed.Region, endpoint: typed.EndpointURL, forcePathStyle: typed.ForcePathStyle, accessKeyID: typed.AccessKeyID, secretAccessKey: typed.SecretAccessKey, sessionToken: typed.SessionToken}
+		raw = s3Settings{storageLocation: typed.StorageLocation, provider: "s3", id: typed.SourceID, bucket: typed.Bucket, key: typed.Key, region: typed.Region, endpoint: typed.EndpointURL, forcePathStyle: typed.ForcePathStyle, accessKeyID: typed.AccessKeyID, secretAccessKey: typed.SecretAccessKey, sessionToken: typed.SessionToken}
 	case S3ProviderDestination:
-		raw = s3Settings{provider: "s3", id: typed.DestinationID, bucket: typed.Bucket, key: typed.Key, region: typed.Region, endpoint: typed.EndpointURL, forcePathStyle: typed.ForcePathStyle, accessKeyID: typed.AccessKeyID, secretAccessKey: typed.SecretAccessKey, sessionToken: typed.SessionToken}
+		raw = s3Settings{storageLocation: typed.StorageLocation, provider: "s3", id: typed.DestinationID, bucket: typed.Bucket, key: typed.Key, region: typed.Region, endpoint: typed.EndpointURL, forcePathStyle: typed.ForcePathStyle, accessKeyID: typed.AccessKeyID, secretAccessKey: typed.SecretAccessKey, sessionToken: typed.SessionToken}
 	case R2ProviderSource:
-		raw = s3Settings{provider: "r2", id: typed.SourceID, bucket: typed.Bucket, key: typed.Key, endpoint: typed.EndpointURL, accessKeyID: typed.AccessKeyID, secretAccessKey: typed.SecretAccessKey, accountID: typed.AccountID}
+		raw = s3Settings{storageLocation: typed.StorageLocation, provider: "r2", id: typed.SourceID, bucket: typed.Bucket, key: typed.Key, endpoint: typed.EndpointURL, accessKeyID: typed.AccessKeyID, secretAccessKey: typed.SecretAccessKey, accountID: typed.AccountID}
 	case R2ProviderDestination:
-		raw = s3Settings{provider: "r2", id: typed.DestinationID, bucket: typed.Bucket, key: typed.Key, endpoint: typed.EndpointURL, accessKeyID: typed.AccessKeyID, secretAccessKey: typed.SecretAccessKey, accountID: typed.AccountID}
+		raw = s3Settings{storageLocation: typed.StorageLocation, provider: "r2", id: typed.DestinationID, bucket: typed.Bucket, key: typed.Key, endpoint: typed.EndpointURL, accessKeyID: typed.AccessKeyID, secretAccessKey: typed.SecretAccessKey, accountID: typed.AccountID}
 	case S3CompatibleProviderSource:
-		raw = s3Settings{provider: s3CompatibleProviderName(typed.Provider), id: typed.SourceID, bucket: typed.Bucket, key: typed.Key, region: typed.Region, endpoint: typed.EndpointURL, forcePathStyle: typed.ForcePathStyle, accessKeyID: typed.AccessKeyID, secretAccessKey: typed.SecretAccessKey, sessionToken: typed.SessionToken, accountID: typed.AccountID}
+		raw = s3Settings{storageLocation: typed.StorageLocation, provider: s3CompatibleProviderName(typed.Provider), id: typed.SourceID, bucket: typed.Bucket, key: typed.Key, region: typed.Region, endpoint: typed.EndpointURL, forcePathStyle: typed.ForcePathStyle, accessKeyID: typed.AccessKeyID, secretAccessKey: typed.SecretAccessKey, sessionToken: typed.SessionToken, accountID: typed.AccountID}
 	case S3CompatibleProviderDestination:
-		raw = s3Settings{provider: s3CompatibleProviderName(typed.Provider), id: typed.DestinationID, bucket: typed.Bucket, key: typed.Key, region: typed.Region, endpoint: typed.EndpointURL, forcePathStyle: typed.ForcePathStyle, accessKeyID: typed.AccessKeyID, secretAccessKey: typed.SecretAccessKey, sessionToken: typed.SessionToken, accountID: typed.AccountID}
+		raw = s3Settings{storageLocation: typed.StorageLocation, provider: s3CompatibleProviderName(typed.Provider), id: typed.DestinationID, bucket: typed.Bucket, key: typed.Key, region: typed.Region, endpoint: typed.EndpointURL, forcePathStyle: typed.ForcePathStyle, accessKeyID: typed.AccessKeyID, secretAccessKey: typed.SecretAccessKey, sessionToken: typed.SessionToken, accountID: typed.AccountID}
 	default:
 		return s3Settings{}, false, nil
 	}
