@@ -5,7 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"math"
 	"math/rand"
 	"net/http"
 	"os"
@@ -16,12 +18,21 @@ import (
 	"time"
 )
 
-const (
-	DevURL  = "nats://127.0.0.1:4222"
-	ProdURL = "tls://orch-gateway.b1m.ai:4222"
-)
+const ProdURL = "tls://orch-gateway.b1m.ai:4222"
+
+// DevURL reports the development broker to use. A development broker is
+// whatever the operator runs, so it is read from the environment and falls back
+// to a local one. Publishing a fixed address here would ship one deployment's
+// private infrastructure to every installation.
+func DevURL() string {
+	if url := os.Getenv("BEAM_DEV_NATS_URL"); url != "" {
+		return url
+	}
+	return "nats://127.0.0.1:4222"
+}
 
 type Client struct {
+	onDiagnostics                     func(SDKPerformanceSummary)
 	natsURL                           string
 	environment                       string
 	apiKey                            string
@@ -29,10 +40,21 @@ type Client struct {
 	control                           transferControl
 	routeSigningConcurrency           int
 	routeSigningConcurrencyOverridden bool
+	multipartControlConcurrency       int
 	maxPayloadBytes                   int
+	subjectPrefix                     string
+	shardCount                        int
+	requestTimeout                    time.Duration
+	configErrors                      []error
 
 	huggingFaceMu      sync.Mutex
 	huggingFaceUploads map[string][]*huggingFaceUploadState
+
+	// signerMu guards the per-transfer signers that outlive the initial route
+	// stream and the in-flight integrity audit submissions.
+	signerMu             sync.Mutex
+	recoverySigners      map[string]*transferSigners
+	integritySubmissions map[string]*integritySubmission
 }
 
 // RouteRecoveryPendingError means a prepared transfer still has an active,
@@ -58,18 +80,50 @@ type transferControl interface {
 	openTerminalSignalWaiter(ctx context.Context, transferID string) (*TransferTerminalSignalWaiter, error)
 	registerRecoveryLease(lease *recoveryLease)
 	releaseRecoveryLease(transferID string)
-	continueRecoveryLease(transferID string)
+	releaseOwnedRecoveryLease(lease *recoveryLease)
+	continueRecoveryLease(lease *recoveryLease)
+	serveRouteRecoverySigner(transferID string, handler routeRecoverySignHandler) (func(), error)
 	close()
 }
 
+// NewClient builds a client leniently: invalid option values are ignored and
+// defaults kept, and a missing API key fails at the first request. Use New to
+// reject invalid configuration up front, as the TypeScript client does.
 func NewClient(options ...Option) *Client {
+	client, _ := newClient(options)
+	return client
+}
+
+// New builds a client and validates its configuration: the API key is
+// required, the lifecycle URL must be nats:// or tls://, and every numeric
+// option must be positive.
+func New(options ...Option) (*Client, error) {
+	client, configErrors := newClient(options)
+	if strings.TrimSpace(client.apiKey) == "" {
+		configErrors = append(configErrors, errors.New("apiKey is required"))
+	}
+	if !isNATSLifecycleURL(client.natsURL) {
+		configErrors = append(configErrors, errors.New("natsURL must use nats:// or tls:// for Go lifecycle transport"))
+	}
+	if err := errors.Join(configErrors...); err != nil {
+		client.Close()
+		return nil, err
+	}
+	return client, nil
+}
+
+func newClient(options []Option) (*Client, []error) {
 	client := &Client{
-		natsURL:                 os.Getenv("BEAM_NATS_URL"),
-		environment:             firstNonEmpty(os.Getenv("BEAM_ENV"), "prod"),
-		apiKey:                  os.Getenv("BEAM_API_KEY"),
-		httpClient:              http.DefaultClient,
-		routeSigningConcurrency: 64,
-		maxPayloadBytes:         defaultMaxPayloadBytes,
+		natsURL:                     os.Getenv("BEAM_NATS_URL"),
+		environment:                 firstNonEmpty(os.Getenv("BEAM_ENV"), "prod"),
+		apiKey:                      os.Getenv("BEAM_API_KEY"),
+		httpClient:                  http.DefaultClient,
+		routeSigningConcurrency:     64,
+		multipartControlConcurrency: DefaultMultipartControlConcurrency,
+		maxPayloadBytes:             defaultMaxPayloadBytes,
+		subjectPrefix:               defaultSubjectPrefix,
+		shardCount:                  parseEnvInt("TRANSFER_RUNTIME_SHARD_COUNT", 1),
+		requestTimeout:              defaultRequestTimeout,
 	}
 
 	for _, option := range options {
@@ -80,19 +134,80 @@ func NewClient(options ...Option) *Client {
 		if client.environment == "prod" {
 			client.natsURL = ProdURL
 		} else {
-			client.natsURL = DevURL
+			client.natsURL = DevURL()
 		}
 	}
 	client.natsURL = strings.TrimRight(client.natsURL, "/")
-	control := newNatsControl(client.apiKey, client.natsURL, client.environment, parseEnvInt("TRANSFER_RUNTIME_SHARD_COUNT", 1))
+	control := newNatsControl(client.apiKey, client.natsURL, client.environment, client.shardCount)
 	control.maxPayloadBytes = client.maxPayloadBytes
+	control.subjectPrefix = client.subjectPrefix
+	control.requestTimeout = client.requestTimeout
 	client.control = control
-	return client
+	return client, client.configErrors
+}
+
+func isNATSLifecycleURL(natsURL string) bool {
+	normalized := strings.ToLower(natsURL)
+	return strings.HasPrefix(normalized, "nats://") || strings.HasPrefix(normalized, "tls://")
+}
+
+// invalid records an invalid option value; NewClient ignores it, New rejects it.
+func (client *Client) invalid(format string, args ...any) {
+	client.configErrors = append(client.configErrors, fmt.Errorf(format, args...))
 }
 
 func WithNATSURL(natsURL string) Option {
 	return func(client *Client) {
 		client.natsURL = natsURL
+	}
+}
+
+// WithSubjectPrefix overrides the lifecycle subject prefix
+// (default beam.transfer.client); leading and trailing dots are trimmed.
+func WithSubjectPrefix(prefix string) Option {
+	return func(client *Client) {
+		normalized := strings.Trim(strings.TrimSpace(prefix), ".")
+		if normalized == "" {
+			client.invalid("subjectPrefix must be non-empty")
+			return
+		}
+		client.subjectPrefix = normalized
+	}
+}
+
+// WithTransferRuntimeShardCount sets the Runtime shard count, overriding
+// TRANSFER_RUNTIME_SHARD_COUNT.
+func WithTransferRuntimeShardCount(shardCount int) Option {
+	return func(client *Client) {
+		if shardCount < 1 {
+			client.invalid("transferRuntimeShardCount must be a positive integer")
+			return
+		}
+		client.shardCount = shardCount
+	}
+}
+
+// WithRequestTimeout bounds each lifecycle request attempt (default 30s).
+func WithRequestTimeout(timeout time.Duration) Option {
+	return func(client *Client) {
+		if timeout <= 0 {
+			client.invalid("requestTimeout must be a positive duration")
+			return
+		}
+		client.requestTimeout = timeout
+	}
+}
+
+// WithMultipartControlConcurrency bounds concurrent multipart create and abort
+// requests (default DefaultMultipartControlConcurrency), independently from
+// route signing.
+func WithMultipartControlConcurrency(concurrency int) Option {
+	return func(client *Client) {
+		if concurrency < 1 {
+			client.invalid("multipartControlConcurrency must be a positive integer")
+			return
+		}
+		client.multipartControlConcurrency = concurrency
 	}
 }
 
@@ -103,7 +218,7 @@ func WithEnvironment(environment string) Option {
 			client.natsURL = ProdURL
 			return
 		}
-		client.natsURL = DevURL
+		client.natsURL = DevURL()
 	}
 }
 
@@ -115,30 +230,37 @@ func WithAPIKey(apiKey string) Option {
 
 func WithHTTPClient(httpClient *http.Client) Option {
 	return func(client *Client) {
-		if httpClient != nil {
-			client.httpClient = httpClient
+		if httpClient == nil {
+			client.invalid("httpClient must be non-nil")
+			return
 		}
+		client.httpClient = httpClient
 	}
 }
 
 func WithRouteSigningConcurrency(concurrency int) Option {
 	return func(client *Client) {
-		if concurrency > 0 {
-			client.routeSigningConcurrency = concurrency
-			client.routeSigningConcurrencyOverridden = true
+		if concurrency < 1 {
+			client.invalid("routeSigningConcurrency must be a positive integer")
+			return
 		}
+		client.routeSigningConcurrency = concurrency
+		client.routeSigningConcurrencyOverridden = true
 	}
 }
 
 func WithMaxPayloadBytes(maxPayloadBytes int) Option {
 	return func(client *Client) {
-		if maxPayloadBytes > 0 {
-			client.maxPayloadBytes = maxPayloadBytes
+		if maxPayloadBytes < 1 {
+			client.invalid("maxPayloadBytes must be a positive integer")
+			return
 		}
+		client.maxPayloadBytes = maxPayloadBytes
 	}
 }
 
 func (client *Client) Close() {
+	client.stopAllRecoverySigners()
 	if client.control != nil {
 		client.control.close()
 	}
@@ -167,6 +289,8 @@ func CalculateOptimalChunkSize(totalSize int64) int64 {
 	return maxChunk
 }
 
+// CreateTransfer creates a raw (non-provider) transfer. It is the Go name for
+// the TypeScript createRawTransfer; see CreateRawTransfer.
 func (client *Client) CreateTransfer(ctx context.Context, input TransferCreateRequest) (*TransferCreateResponse, error) {
 	if input.ChunkSize == 0 {
 		input.ChunkSize = CalculateOptimalChunkSize(input.TotalSize)
@@ -175,13 +299,21 @@ func (client *Client) CreateTransfer(ctx context.Context, input TransferCreateRe
 	if input.TransferID == "" {
 		input.TransferID = transferIDForIdempotencyKey(input.IdempotencyKey)
 	}
+	if err := validateID(input.TransferID, "transferID"); err != nil {
+		return nil, err
+	}
 	if input.SignedURLFlow == "" {
 		input.SignedURLFlow = SignedURLFlowCanonical
 	}
-	if err := client.control.request(ctx, "transfer.create", structToMap(input), input.TransferID, &result, firstNonEmpty(input.IdempotencyKey, "transfer:"+input.TransferID+":create")); err != nil {
+	if err := client.control.request(ctx, "transfer.create", structToMap(input), input.TransferID, &result, "transfer:"+input.TransferID+":create"); err != nil {
 		return nil, err
 	}
 	return &result, nil
+}
+
+// CreateRawTransfer is the TypeScript-equivalent name for CreateTransfer.
+func (client *Client) CreateRawTransfer(ctx context.Context, input TransferCreateRequest) (*TransferCreateResponse, error) {
+	return client.CreateTransfer(ctx, input)
 }
 
 func (client *Client) TransferStatus(ctx context.Context, transferID string) (*TransferStatusInfo, error) {
@@ -192,8 +324,14 @@ func (client *Client) TransferStatus(ctx context.Context, transferID string) (*T
 	if err := client.control.request(ctx, "transfer.status", map[string]any{"transfer_id": transferID}, transferID, &result); err != nil {
 		return nil, err
 	}
+	if result.IntegrityAuditChallenge != nil {
+		if err := client.submitIntegrityAuditGrantsIfPresent(ctx, result.IntegrityAuditChallenge); err != nil {
+			result.IntegrityAuditSubmissionError = integrityAuditErrorSummary(err)
+		}
+	}
 	if result.Status == "completed" || result.Status == "failed" || result.Status == "cancelled" {
 		client.control.releaseRecoveryLease(transferID)
+		client.stopRecoverySigner(transferID)
 	}
 	return &result, nil
 }
@@ -218,7 +356,10 @@ func (client *Client) DistributeTransfer(ctx context.Context, transferID string)
 	return &result, nil
 }
 
-func (client *Client) CancelTransfer(ctx context.Context, transferID string) (*TransferCancelResponse, error) {
+// requestTransferCancellation asks BeamCore to cancel without releasing local
+// recovery state. Provider failure cleanup uses it so the retained destination
+// credentials stay available until created multipart uploads are aborted.
+func (client *Client) requestTransferCancellation(ctx context.Context, transferID string) (*TransferCancelResponse, error) {
 	if err := validateID(transferID, "transferID"); err != nil {
 		return nil, err
 	}
@@ -226,11 +367,64 @@ func (client *Client) CancelTransfer(ctx context.Context, transferID string) (*T
 	if err := client.control.request(ctx, "transfer.cancel", map[string]any{"transfer_id": transferID}, transferID, &result, "transfer:"+transferID+":cancel"); err != nil {
 		return nil, err
 	}
+	return &result, nil
+}
+
+// CancelTransfer cancels a transfer. Once BeamCore answers, the local recovery
+// lease, route recovery signer, and integrity signer are released.
+func (client *Client) CancelTransfer(ctx context.Context, transferID string) (*TransferCancelResponse, error) {
+	result, err := client.requestTransferCancellation(ctx, transferID)
+	if err != nil {
+		return nil, err
+	}
+	client.control.releaseRecoveryLease(transferID)
+	client.stopRecoverySigner(transferID)
+	return result, nil
+}
+
+// TransferPlanRequest is the input for PlanTransfer.
+type TransferPlanRequest struct {
+	Sources       []PlanningHTTPSource
+	Destinations  []PreparedDestination
+	Name          string
+	TestMode      bool
+	URLsExpiresAt string
+	// ChunkSize requests a plan chunk size; BeamCore may raise it.
+	ChunkSize int64
+}
+
+// PlanTransfer asks BeamCore for the compact plan a transfer would use without
+// creating it. Sources need no signed URLs; see PrepareProviderSourceForPlan.
+func (client *Client) PlanTransfer(ctx context.Context, request TransferPlanRequest) (*TransferPlanResponse, error) {
+	body := map[string]any{
+		"sources":         request.Sources,
+		"destinations":    request.Destinations,
+		"signed_url_flow": SignedURLFlowCanonical,
+	}
+	if request.Name != "" {
+		body["name"] = request.Name
+	}
+	if request.TestMode {
+		body["test_mode"] = true
+	}
+	if request.ChunkSize > 0 {
+		body["chunk_size"] = request.ChunkSize
+	}
+	if request.URLsExpiresAt != "" {
+		body["urls_expires_at"] = request.URLsExpiresAt
+	}
+	var result TransferPlanResponse
+	if err := client.control.request(ctx, "transfer.plan", body, "", &result); err != nil {
+		return nil, err
+	}
 	if result.Success {
-		client.control.releaseRecoveryLease(transferID)
+		if err := validateCompactTransferPlan(result.SignedURLFlow, result.PlanDescriptor); err != nil {
+			return nil, err
+		}
 	}
 	return &result, nil
 }
+
 func (client *Client) PrepareTransfer(
 	ctx context.Context,
 	sources []PreparedHTTPSource,
@@ -241,50 +435,61 @@ func (client *Client) PrepareTransfer(
 	routeGenerationID string,
 	idempotencyKey ...string,
 ) (*TransferPrepareResponse, error) {
-	return client.prepareTransferWithChunkSize(ctx, sources, destinations, name, testMode, urlsExpiresAt, routeGenerationID, 0, idempotencyKey...)
-}
-
-// prepareTransferWithChunkSize requests a specific plan chunk size. BeamCore may raise it, so
-// callers that depend on the exact value must check the response.
-func (client *Client) prepareTransferWithChunkSize(
-	ctx context.Context,
-	sources []PreparedHTTPSource,
-	destinations []PreparedDestination,
-	name string,
-	testMode bool,
-	urlsExpiresAt string,
-	routeGenerationID string,
-	chunkSize int64,
-	idempotencyKey ...string,
-) (*TransferPrepareResponse, error) {
 	key := ""
 	if len(idempotencyKey) > 0 {
 		key = idempotencyKey[0]
 	}
-	transferID := transferIDForIdempotencyKey(key)
-	prepareIdempotencyKey := firstNonEmpty(key, "transfer:"+transferID+":prepare")
+	return client.PrepareTransferWithRequest(ctx, TransferPrepareRequest{
+		Sources:           sources,
+		Destinations:      destinations,
+		Name:              name,
+		TestMode:          testMode,
+		URLsExpiresAt:     urlsExpiresAt,
+		RouteGenerationID: routeGenerationID,
+		IdempotencyKey:    key,
+	})
+}
+
+// PrepareTransferWithRequest prepares a transfer from already-prepared HTTP
+// sources and destinations. It mirrors the TypeScript prepareTransfer input.
+func (client *Client) PrepareTransferWithRequest(ctx context.Context, request TransferPrepareRequest) (*TransferPrepareResponse, error) {
+	return client.prepareTransferWithRequestKey(ctx, request, "")
+}
+
+// prepareTransferWithRequestKey prepares a transfer under an explicit lifecycle
+// request key; an empty key derives transfer:<id>:prepare. The route generation
+// derives from that key unless the request names one.
+func (client *Client) prepareTransferWithRequestKey(ctx context.Context, request TransferPrepareRequest, requestKey string) (*TransferPrepareResponse, error) {
+	transferID := request.TransferID
+	if transferID == "" {
+		transferID = transferIDForIdempotencyKey(request.IdempotencyKey)
+	}
+	if err := validateID(transferID, "transferID"); err != nil {
+		return nil, err
+	}
+	prepareIdempotencyKey := firstNonEmpty(requestKey, "transfer:"+transferID+":prepare")
 	body := map[string]any{
-		"sources":      sources,
-		"destinations": destinations,
+		"transfer_id":  transferID,
+		"sources":      request.Sources,
+		"destinations": request.Destinations,
 		"route_generation_id": firstNonEmpty(
-			routeGenerationID,
-			stableIDFromIdentity("beam-route-generation:"+prepareIdempotencyKey),
+			request.RouteGenerationID,
+			stableIDFromIdentity("beam-route-generation:"+strings.TrimSpace(prepareIdempotencyKey)),
 		),
-		"transfer_id": transferID,
+		"signed_url_flow": SignedURLFlowCanonical,
 	}
-	if name != "" {
-		body["name"] = name
+	if request.Name != "" {
+		body["name"] = request.Name
 	}
-	if testMode {
+	if request.TestMode {
 		body["test_mode"] = true
 	}
-	if urlsExpiresAt != "" {
-		body["urls_expires_at"] = urlsExpiresAt
+	if request.URLsExpiresAt != "" {
+		body["urls_expires_at"] = request.URLsExpiresAt
 	}
-	if chunkSize > 0 {
-		body["chunk_size"] = chunkSize
+	if request.ChunkSize > 0 {
+		body["chunk_size"] = request.ChunkSize
 	}
-	body["signed_url_flow"] = SignedURLFlowCanonical
 
 	var result TransferPrepareResponse
 	if err := client.control.request(ctx, "transfer.prepare", body, transferID, &result, prepareIdempotencyKey); err != nil {
@@ -313,7 +518,10 @@ func (client *Client) AttachSignedURLs(
 		return nil, err
 	}
 	if routeGenerationID == "" || recovery.PlanFingerprint == "" || recovery.CoordinateChecksum == "" || recovery.Regenerate == nil {
-		return nil, fmt.Errorf("route generation and recovery factory are required by transfer-client-control/v6")
+		return nil, fmt.Errorf("route generation and recovery factory are required by transfer-client-control/v7")
+	}
+	if err := validateSignedRouteManifestContract(transferID, chunkRoutes, multipartGroupManifest); err != nil {
+		return nil, err
 	}
 	streamRoutes := func(streamCtx context.Context, routes []SignedChunkRoute, manifests []MultipartGroupManifest, expiresAt string, generationID string) (*AttachSignedURLsResponse, error) {
 		if err := validateSignedRouteManifestContract(transferID, routes, manifests); err != nil {
@@ -331,10 +539,8 @@ func (client *Client) AttachSignedURLs(
 			if len(destinationIDs) != 1 {
 				return nil, fmt.Errorf("delivery_index is required when manually attaching routes for multiple destinations")
 			}
-			if orderedRoutes[index].Metadata == nil {
-				orderedRoutes[index].Metadata = make(map[string]any)
-			}
-			orderedRoutes[index].Metadata["delivery_index"] = route.ChunkIndex
+			deliveryIndex := route.ChunkIndex
+			orderedRoutes[index].DeliveryIndex = &deliveryIndex
 		}
 		sort.SliceStable(orderedRoutes, func(left, right int) bool {
 			leftIndex, leftHasIndex := signedRouteDeliveryIndex(orderedRoutes[left])
@@ -375,7 +581,7 @@ func (client *Client) AttachSignedURLs(
 
 	streamMu := &sync.Mutex{}
 	streamMu.Lock()
-	client.control.registerRecoveryLease(&recoveryLease{
+	lease := &recoveryLease{
 		transferID:         transferID,
 		planFingerprint:    recovery.PlanFingerprint,
 		coordinateChecksum: recovery.CoordinateChecksum,
@@ -392,30 +598,33 @@ func (client *Client) AttachSignedURLs(
 			}
 			return err
 		},
-	})
+	}
+	client.control.registerRecoveryLease(lease)
 	result, err := streamRoutes(ctx, chunkRoutes, multipartGroupManifest, urlsExpiresAt, routeGenerationID)
 	streamMu.Unlock()
 	if err != nil {
 		if ctx.Err() != nil {
-			client.control.continueRecoveryLease(transferID)
+			client.control.continueRecoveryLease(lease)
 			return nil, err
 		}
 		if isRecoverableRouteStreamError(err) {
-			client.control.continueRecoveryLease(transferID)
+			client.control.continueRecoveryLease(lease)
 			return nil, &RouteRecoveryPendingError{TransferID: transferID, Cause: err}
 		}
-		client.control.releaseRecoveryLease(transferID)
+		client.control.releaseOwnedRecoveryLease(lease)
 		return nil, err
 	}
 	if !result.Success {
-		client.control.releaseRecoveryLease(transferID)
+		client.control.releaseOwnedRecoveryLease(lease)
 	}
 	return result, nil
 }
 
-const routeStreamBatchRoutes = 2048
+const routeStreamBatchRoutes = 1024
 
 type routeStreamSender struct {
+	telemetry           *sdkPerformance
+	onDiagnostics       func(SDKPerformanceSummary)
 	control             transferControl
 	transferID          string
 	streamID            string
@@ -438,6 +647,7 @@ func newRouteStreamSender(control transferControl, transferID string, totalRoute
 		signedURLFlow = SignedURLFlowCanonical
 	}
 	return &routeStreamSender{
+		telemetry:           newSDKPerformance(),
 		control:             control,
 		transferID:          transferID,
 		streamID:            stableRouteStreamID(transferID, planIdentity, totalRoutes, totalChunks, signedURLFlow),
@@ -483,6 +693,7 @@ func (s *routeStreamSender) addRoute(ctx context.Context, route SignedChunkRoute
 	s.seenDeliveryIndices[deliveryIndex] = struct{}{}
 	s.routeCount++
 	s.checksum.add(routeKeyForSignedRoute(route))
+	route.DeliveryIndex = &deliveryIndex
 	s.batch = append(s.batch, route)
 	if len(s.batch) >= routeStreamBatchRoutes {
 		if err := s.enqueueFlush(ctx); err != nil {
@@ -492,18 +703,36 @@ func (s *routeStreamSender) addRoute(ctx context.Context, route SignedChunkRoute
 	return nil
 }
 
+// addManifestGroups sends each multipart group as its own manifest request,
+// concurrently, so one group's controls never wait on another's.
 func (s *routeStreamSender) addManifestGroups(ctx context.Context, groups []MultipartGroupManifest) error {
 	if len(groups) == 0 {
 		return nil
 	}
-	identity := stableManifestBatchIdentity(groups)
-	return s.control.request(ctx, "transfer.route_stream.manifest", map[string]any{
-		"transfer_id":         s.transferID,
-		"stream_id":           s.streamID,
-		"route_generation_id": s.routeGenerationID,
-		"manifest_batch_id":   identity,
-		"groups":              groups,
-	}, s.transferID, nil, fmt.Sprintf("transfer:%s:route-stream:%s:manifest:%s", s.transferID, s.streamID, identity))
+	sendGroup := func(group MultipartGroupManifest) error {
+		identity := stableManifestBatchIdentity([]MultipartGroupManifest{group})
+		return s.control.request(ctx, "transfer.route_stream.manifest", map[string]any{
+			"transfer_id":         s.transferID,
+			"stream_id":           s.streamID,
+			"route_generation_id": s.routeGenerationID,
+			"manifest_batch_id":   identity,
+			"groups":              []MultipartGroupManifest{group},
+		}, s.transferID, nil, fmt.Sprintf("transfer:%s:route-stream:%s:manifest:%s", s.transferID, s.streamID, identity))
+	}
+	if len(groups) == 1 {
+		return sendGroup(groups[0])
+	}
+	errs := make([]error, len(groups))
+	var wait sync.WaitGroup
+	for index, group := range groups {
+		wait.Add(1)
+		go func(index int, group MultipartGroupManifest) {
+			defer wait.Done()
+			errs[index] = sendGroup(group)
+		}(index, group)
+	}
+	wait.Wait()
+	return errors.Join(errs...)
 }
 
 func (s *routeStreamSender) complete(ctx context.Context, output any) error {
@@ -516,7 +745,13 @@ func (s *routeStreamSender) complete(ctx context.Context, output any) error {
 	if err := s.waitForPendingSend(); err != nil {
 		return err
 	}
+	s.telemetry.observe("sdk.preparation", s.telemetry.started)
+	summary := s.telemetry.snapshot()
+	if s.onDiagnostics != nil {
+		s.onDiagnostics(summary)
+	}
 	return s.control.request(ctx, "transfer.route_stream.complete", map[string]any{
+		"sdk_performance":     summary,
 		"transfer_id":         s.transferID,
 		"stream_id":           s.streamID,
 		"route_generation_id": s.routeGenerationID,
@@ -532,6 +767,8 @@ func (s *routeStreamSender) waitForPendingSend() error {
 	}
 	pending := s.sendTail
 	s.sendTail = nil
+	started := time.Now()
+	defer s.telemetry.observe("sdk.buffer_wait", started)
 	return <-pending
 }
 
@@ -565,6 +802,8 @@ func (s *routeStreamSender) enqueueFlush(ctx context.Context) error {
 			routeChecksum := checksumForRoutes(item.routes)
 			coordinateChecksum := checksumForRouteCoordinates(item.routes)
 			batchID := fmt.Sprintf("%s:%d:%s", s.streamID, item.batchIndex, coordinateChecksum)
+			started := time.Now()
+			s.telemetry.batch()
 			if err := s.control.request(ctx, "transfer.route_stream.batch", map[string]any{
 				"transfer_id":         s.transferID,
 				"stream_id":           s.streamID,
@@ -578,6 +817,7 @@ func (s *routeStreamSender) enqueueFlush(ctx context.Context) error {
 				done <- err
 				return
 			}
+			s.telemetry.observe("sdk.batch_ack", started)
 		}
 		done <- nil
 	}()
@@ -592,12 +832,14 @@ func stableRouteStreamID(transferID string, planIdentity string, totalRoutes int
 	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", bytes[0:4], bytes[4:6], bytes[6:8], bytes[8:10], bytes[10:16])
 }
 
+// signedRouteDeliveryIndex prefers a numeric metadata delivery_index, then the
+// route field. Index 0 is a valid delivery index.
 func signedRouteDeliveryIndex(route SignedChunkRoute) (int, bool) {
-	if value, present := route.Metadata["delivery_index"]; present {
-		return intValue(value), true
+	if value, integer := exactIntegerValue(route.Metadata["delivery_index"]); integer {
+		return value, true
 	}
-	if route.DeliveryIndex > 0 {
-		return route.DeliveryIndex, true
+	if route.DeliveryIndex != nil {
+		return *route.DeliveryIndex, true
 	}
 	return 0, false
 }
@@ -661,18 +903,57 @@ func (client *Client) CreateAndDistribute(ctx context.Context, input TransferCre
 	return result, nil
 }
 
+// WaitForTransferOptions configures WaitForTransferWithOptions. Zero values use
+// the defaults; negative values are rejected.
+type WaitForTransferOptions struct {
+	// Timeout bounds the whole wait. Defaults to 5 minutes.
+	Timeout time.Duration
+	// PollInterval is the initial status fallback interval. Defaults to 15 seconds.
+	PollInterval time.Duration
+	// MaxPollInterval caps the backed-off interval. Defaults to 30 seconds and is
+	// never lower than PollInterval.
+	MaxPollInterval time.Duration
+}
+
+// WaitForTransfer waits for a terminal status. Zero timeout and poll interval use
+// the defaults of WaitForTransferOptions.
 func (client *Client) WaitForTransfer(
 	ctx context.Context,
 	transferID string,
 	timeout time.Duration,
 	pollInterval time.Duration,
 ) (*TransferStatusInfo, error) {
+	return client.WaitForTransferWithOptions(ctx, transferID, WaitForTransferOptions{Timeout: timeout, PollInterval: pollInterval})
+}
+
+// WaitForTransferWithOptions subscribes to the transfer's terminal signal,
+// reconciles every signal through authoritative status, and falls back to
+// jittered, backed-off polling. On completion it commits any Hugging Face
+// destination uploads before returning.
+func (client *Client) WaitForTransferWithOptions(ctx context.Context, transferID string, options WaitForTransferOptions) (*TransferStatusInfo, error) {
+	if err := validateID(transferID, "transferID"); err != nil {
+		return nil, err
+	}
+	timeout, pollInterval, maxPollInterval := options.Timeout, options.PollInterval, options.MaxPollInterval
+	if timeout < 0 {
+		return nil, fmt.Errorf("timeout must be a positive duration")
+	}
+	if pollInterval < 0 {
+		return nil, fmt.Errorf("pollInterval must be a positive duration")
+	}
+	if maxPollInterval < 0 {
+		return nil, fmt.Errorf("maxPollInterval must be a positive duration")
+	}
 	if timeout == 0 {
 		timeout = 5 * time.Minute
 	}
 	if pollInterval == 0 {
 		pollInterval = 15 * time.Second
 	}
+	if maxPollInterval == 0 {
+		maxPollInterval = 30 * time.Second
+	}
+	maxPollInterval = max(pollInterval, maxPollInterval)
 	initialPollInterval := pollInterval
 	waiter, _ := client.OpenTransferTerminalWaiter(ctx, transferID)
 	defer func() {
@@ -688,6 +969,10 @@ func (client *Client) WaitForTransfer(
 		}
 		switch status.Status {
 		case "completed":
+			// The parts have landed; publish them as a Hub commit before reporting success.
+			if err := client.FinalizeHuggingFaceUploads(ctx, transferID); err != nil {
+				return nil, err
+			}
 			return status, nil
 		case "failed":
 			message := ""
@@ -736,7 +1021,7 @@ func (client *Client) WaitForTransfer(
 		if terminalEvent != nil {
 			pollInterval = initialPollInterval
 		} else {
-			pollInterval = min(30*time.Second, time.Duration(float64(pollInterval)*1.5))
+			pollInterval = min(maxPollInterval, time.Duration(math.Ceil(float64(pollInterval)*1.5)))
 		}
 	}
 }
@@ -781,12 +1066,12 @@ func validateSignedRouteManifestContract(transferID string, routes []SignedChunk
 		if group.ExpectedObjectSize <= 0 || group.ExpectedPartCount < 1 || group.ExpectedPartCount > multipartMaxSourceChunks {
 			return fmt.Errorf("multipart group %s has invalid expected object or part count", group.MultipartGroupID)
 		}
-		expectedMaxPartNumber, err := multipartPartNumber(group.ExpectedPartCount-1, multipartAttemptSlots-1)
+		expectedMaxPartNumber, err := MultipartPartNumber(group.ExpectedPartCount-1, 0)
 		if err != nil {
 			return err
 		}
 		if group.MaxPartNumber != expectedMaxPartNumber {
-			return fmt.Errorf("multipart group %s max_part_number must equal highest reserved recovery slot", group.MultipartGroupID)
+			return fmt.Errorf("multipart group %s max_part_number must equal its consecutive part count", group.MultipartGroupID)
 		}
 		expectedListPageCount := (group.MaxPartNumber + 999) / 1_000
 		uniqueListPageURLs := make(map[string]struct{}, len(group.ListPageURLs))
@@ -844,7 +1129,7 @@ func validateCompactTransferPlan(signedURLFlow SignedURLFlow, descriptor Compact
 	expected := CompactTransferPlanFormulas{
 		SourceOffset:      "source_chunk_index * chunk_size",
 		DeliveryIndex:     "chunk_index * destination_count + destination_index",
-		PartNumber:        "source_chunk_index * 3 + attempt_slot + 1",
+		PartNumber:        "source_chunk_index + 1",
 		RouteGenerationID: "initial-{chunk_index}-{destination_id}",
 	}
 	if descriptor.Formulas != expected {

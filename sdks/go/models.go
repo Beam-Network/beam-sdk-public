@@ -12,6 +12,11 @@ const (
 	SignedURLFlowCanonical SignedURLFlow = "signed_url"
 )
 
+// Bool returns a pointer to value, for optional boolean fields such as ForcePathStyle.
+func Bool(value bool) *bool {
+	return &value
+}
+
 type SourceConfig map[string]any
 
 type DestConfig map[string]any
@@ -40,6 +45,7 @@ type TransferCreateRequest struct {
 type TransferCreateResponse struct {
 	Success           bool                `json:"success"`
 	TransferID        string              `json:"transfer_id"`
+	TransferKey       string              `json:"transfer_key,omitempty"`
 	TotalChunks       int                 `json:"total_chunks"`
 	TotalSources      int                 `json:"total_sources"`
 	TotalDestinations int                 `json:"total_destinations"`
@@ -100,22 +106,88 @@ type DestinationTransferProgress struct {
 	CompletionVerified     bool   `json:"completion_verified"`
 }
 
+type PerformanceMeasurement struct {
+	Count  uint64  `json:"count"`
+	WorkMs float64 `json:"work_ms"`
+	MaxMs  float64 `json:"max_ms"`
+}
+type PerformanceEvent struct {
+	Count   uint64  `json:"count"`
+	FirstMs float64 `json:"first_ms"`
+	LastMs  float64 `json:"last_ms"`
+}
+type PerformanceCounters struct {
+	SourceSignatures uint64 `json:"source_signatures"`
+	SourceReuses     uint64 `json:"source_reuses"`
+	RouteBatches     uint64 `json:"route_batches"`
+}
+
+// TransferPerformance separates elapsed time from work that can overlap.
+type TransferPerformance struct {
+	SchemaVersion     string                            `json:"schema_version"`
+	RuntimeEpoch      string                            `json:"runtime_epoch"`
+	Coverage          string                            `json:"coverage"`
+	ElapsedMs         float64                           `json:"elapsed_ms"`
+	Measurements      map[string]PerformanceMeasurement `json:"measurements"`
+	Events            map[string]PerformanceEvent       `json:"events"`
+	SDKCounters       PerformanceCounters               `json:"sdk_counters"`
+	DetailDropped     uint64                            `json:"detail_dropped"`
+	Unmeasured        []string                          `json:"unmeasured,omitempty"`
+	MeasurementClocks map[string]string                 `json:"measurement_clocks,omitempty"`
+	SDKReportReceived *bool                             `json:"sdk_report_received,omitempty"`
+}
+
 type TransferStatusInfo struct {
-	TransferID             string                        `json:"transfer_id"`
-	Status                 string                        `json:"status"`
-	ErrorMessage           *string                       `json:"error_message"`
-	Runtime                bool                          `json:"runtime,omitempty"`
-	SourceBytesTotal       int64                         `json:"source_bytes_total"`
-	DeliveryBytesTotal     int64                         `json:"delivery_bytes_total"`
-	DeliveryBytesCompleted int64                         `json:"delivery_bytes_completed"`
-	DeliveryTasksTotal     int                           `json:"delivery_tasks_total"`
-	DeliveryTasksCompleted int                           `json:"delivery_tasks_completed"`
-	DestinationsTotal      int                           `json:"destinations_total"`
-	DestinationsCompleted  int                           `json:"destinations_completed,omitempty"`
-	DestinationProgress    []DestinationTransferProgress `json:"destination_progress"`
-	DestinationGroups      DestinationGroupProgress      `json:"destination_groups"`
-	StartedAt              *string                       `json:"started_at"`
-	CompletedAt            *string                       `json:"completed_at"`
+	Performance             *TransferPerformance          `json:"performance,omitempty"`
+	TransferID              string                        `json:"transfer_id"`
+	Name                    string                        `json:"name,omitempty"`
+	Status                  string                        `json:"status"`
+	ErrorMessage            *string                       `json:"error_message"`
+	Runtime                 bool                          `json:"runtime,omitempty"`
+	SourceBytesTotal        int64                         `json:"source_bytes_total"`
+	DeliveryBytesTotal      int64                         `json:"delivery_bytes_total"`
+	DeliveryBytesCompleted  int64                         `json:"delivery_bytes_completed"`
+	DeliveryTasksTotal      int                           `json:"delivery_tasks_total"`
+	DeliveryTasksCompleted  int                           `json:"delivery_tasks_completed"`
+	DestinationsTotal       int                           `json:"destinations_total"`
+	DestinationsCompleted   int                           `json:"destinations_completed,omitempty"`
+	DestinationProgress     []DestinationTransferProgress `json:"destination_progress"`
+	DestinationGroups       DestinationGroupProgress      `json:"destination_groups"`
+	StartedAt               *string                       `json:"started_at"`
+	CompletedAt             *string                       `json:"completed_at"`
+	Phase                   string                        `json:"phase,omitempty"`
+	IntegrityAuditChallenge *IntegrityAuditChallenge      `json:"integrity_audit_challenge,omitempty"`
+	IntegrityCheckWarning   *string                       `json:"integrity_check_warning,omitempty"`
+	// IntegrityAuditSubmissionError is set by the SDK, not BeamCore, when signing
+	// or submitting integrity audit grants for this status failed. It is a
+	// URL- and credential-safe summary; the next status poll retries.
+	IntegrityAuditSubmissionError string `json:"integrity_audit_submission_error,omitempty"`
+}
+
+type IntegrityAuditChallenge struct {
+	AuditID     string                         `json:"audit_id"`
+	TransferID  string                         `json:"transfer_id"`
+	RequestedAt string                         `json:"requested_at,omitempty"`
+	RangeBytes  int64                          `json:"range_bytes,omitempty"`
+	Chunks      []IntegrityAuditChallengeChunk `json:"chunks"`
+}
+
+type IntegrityAuditChallengeChunk struct {
+	ChallengeID        string  `json:"challenge_id"`
+	TaskID             string  `json:"task_id"`
+	AttemptID          *string `json:"attempt_id"`
+	OrchestratorID     string  `json:"orchestrator_id,omitempty"`
+	OrchestratorHotkey string  `json:"orchestrator_hotkey,omitempty"`
+	WorkerID           *string `json:"worker_id,omitempty"`
+	SourceID           string  `json:"source_id"`
+	DestinationID      string  `json:"destination_id"`
+	RouteChunkIndex    int     `json:"route_chunk_index"`
+	DeliveryIndex      int     `json:"delivery_index"`
+	SourceOffset       int64   `json:"source_offset"`
+	DestinationOffset  int64   `json:"destination_offset"`
+	RangeLength        int64   `json:"range_length"`
+	FinalObjectKey     string  `json:"final_object_key"`
+	FinalObjectETag    *string `json:"final_object_etag"`
 }
 
 // TransferTerminalEvent is the owned, transfer-scoped completion signal emitted
@@ -126,6 +198,20 @@ type TransferTerminalEvent struct {
 	TransferID    string `json:"transfer_id" msgpack:"transfer_id"`
 	Status        string `json:"status" msgpack:"status"`
 	OccurredAt    string `json:"occurred_at" msgpack:"occurred_at"`
+}
+
+// PlanningHTTPSource is a source described for transfer.plan. Unlike
+// PreparedHTTPSource it needs no signed URL.
+type PlanningHTTPSource struct {
+	SourceID  string            `json:"source_id"`
+	Type      string            `json:"type"`
+	Provider  string            `json:"provider,omitempty"`
+	URL       string            `json:"url,omitempty"`
+	Size      int64             `json:"size"`
+	Filename  string            `json:"filename,omitempty"`
+	Headers   map[string]string `json:"headers,omitempty"`
+	ExpiresAt string            `json:"expires_at,omitempty"`
+	Metadata  map[string]any    `json:"metadata,omitempty"`
 }
 
 type PreparedHTTPSource struct {
@@ -178,15 +264,15 @@ type CompactTransferPlanDestination struct {
 }
 
 type CompactTransferPlanDescriptor struct {
-	Version            string                           `json:"version"`
-	PlanNonce          string                           `json:"plan_nonce"`
-	ChunkSize          int64                            `json:"chunk_size"`
-	Sources            []CompactTransferPlanSource      `json:"sources"`
-	Destinations       []CompactTransferPlanDestination `json:"destinations"`
-	LogicalChunkCount  int                              `json:"logical_chunk_count"`
-	DeliveryRouteCount int                              `json:"delivery_route_count"`
-	MultipartAttemptSlots int                           `json:"multipart_attempt_slots"`
-	Formulas           CompactTransferPlanFormulas      `json:"formulas"`
+	Version               string                           `json:"version"`
+	PlanNonce             string                           `json:"plan_nonce"`
+	ChunkSize             int64                            `json:"chunk_size"`
+	Sources               []CompactTransferPlanSource      `json:"sources"`
+	Destinations          []CompactTransferPlanDestination `json:"destinations"`
+	LogicalChunkCount     int                              `json:"logical_chunk_count"`
+	DeliveryRouteCount    int                              `json:"delivery_route_count"`
+	MultipartAttemptSlots int                              `json:"multipart_attempt_slots"`
+	Formulas              CompactTransferPlanFormulas      `json:"formulas"`
 }
 
 func (descriptor *CompactTransferPlanDescriptor) UnmarshalJSON(data []byte) error {
@@ -217,10 +303,12 @@ func (formulas *CompactTransferPlanFormulas) UnmarshalJSON(data []byte) error {
 }
 
 type SignedChunkRoute struct {
-	SourceID      string            `json:"source_id"`
-	DestinationID string            `json:"destination_id"`
-	ChunkIndex    int               `json:"chunk_index"`
-	DeliveryIndex int               `json:"delivery_index,omitempty"`
+	SourceID      string `json:"source_id"`
+	DestinationID string `json:"destination_id"`
+	ChunkIndex    int    `json:"chunk_index"`
+	// DeliveryIndex is optional; nil means "not set", so index 0 is representable.
+	// A numeric metadata["delivery_index"] takes precedence when both are present.
+	DeliveryIndex *int              `json:"delivery_index,omitempty"`
 	SourceURL     string            `json:"source_url"`
 	DestURL       string            `json:"dest_url"`
 	SourceOffset  int64             `json:"source_offset"`
@@ -264,6 +352,24 @@ func unmarshalStrictJSON(data []byte, output any) error {
 	return decoder.Decode(output)
 }
 
+// TransferPlanResponse is BeamCore's transfer.plan reply: the compact plan a
+// transfer would use, without creating the transfer.
+type TransferPlanResponse struct {
+	Success            bool                          `json:"success"`
+	ChunkSize          int64                         `json:"chunk_size,omitempty"`
+	TotalSize          int64                         `json:"total_size,omitempty"`
+	TotalSources       int                           `json:"total_sources,omitempty"`
+	TotalDestinations  int                           `json:"total_destinations,omitempty"`
+	LogicalChunks      int                           `json:"logical_chunks,omitempty"`
+	TotalChunks        int                           `json:"total_chunks,omitempty"`
+	PlanDescriptor     CompactTransferPlanDescriptor `json:"plan_descriptor"`
+	SignedURLFlow      SignedURLFlow                 `json:"signed_url_flow"`
+	PlanFingerprint    string                        `json:"plan_fingerprint"`
+	CoordinateChecksum string                        `json:"coordinate_checksum"`
+	Error              string                        `json:"error,omitempty"`
+	Message            string                        `json:"message,omitempty"`
+}
+
 type TransferPrepareResponse struct {
 	Success            bool                          `json:"success"`
 	TransferID         string                        `json:"transfer_id"`
@@ -282,6 +388,39 @@ type TransferPrepareResponse struct {
 	RouteGenerationID  string                        `json:"route_generation_id"`
 	Error              string                        `json:"error,omitempty"`
 	Message            string                        `json:"message,omitempty"`
+}
+
+// TransferPrepareRequest is the input for PrepareTransferWithRequest.
+type TransferPrepareRequest struct {
+	// TransferID prepares an existing transfer; empty derives it from IdempotencyKey.
+	TransferID    string
+	Sources       []PreparedHTTPSource
+	Destinations  []PreparedDestination
+	Name          string
+	TestMode      bool
+	URLsExpiresAt string
+	// IdempotencyKey is a stable caller identity used to derive the transfer id.
+	IdempotencyKey string
+	// RouteGenerationID is internal recovery state; callers normally leave it empty.
+	RouteGenerationID string
+	// ChunkSize requests a plan chunk size. BeamCore may raise it; the response
+	// carries the effective value.
+	ChunkSize int64
+}
+
+// ProviderMultipartGroupIdentity is the durable identity of one multipart
+// upload created by a provider transfer. It never carries credentials, request
+// headers, or signed URLs.
+type ProviderMultipartGroupIdentity struct {
+	TransferID         string `json:"transferId"`
+	MultipartGroupID   string `json:"multipartGroupId"`
+	SourceID           string `json:"sourceId"`
+	DestinationID      string `json:"destinationId"`
+	ObjectKey          string `json:"objectKey"`
+	UploadID           string `json:"uploadId"`
+	ExpectedObjectSize int64  `json:"expectedObjectSize"`
+	ExpectedPartCount  int    `json:"expectedPartCount"`
+	ExpiresAt          string `json:"expiresAt"`
 }
 
 // ManualRouteRecovery regenerates short-lived routes in memory after a Runtime
@@ -311,6 +450,9 @@ type S3ProviderSource struct {
 	SecretAccessKey string `json:"secret_access_key"`
 	SessionToken    string `json:"session_token,omitempty"`
 	EndpointURL     string `json:"endpoint_url,omitempty"`
+	// ForcePathStyle overrides addressing; nil keeps the AWS SDK default
+	// (virtual-hosted) for S3.
+	ForcePathStyle *bool `json:"force_path_style,omitempty"`
 }
 
 type R2ProviderSource struct {
@@ -322,6 +464,44 @@ type R2ProviderSource struct {
 	SecretAccessKey string `json:"secret_access_key"`
 	AccountID       string `json:"account_id,omitempty"`
 	EndpointURL     string `json:"endpoint_url,omitempty"`
+}
+
+// S3CompatibleProviderSource is an S3-compatible source with a named provider
+// and custom endpoint, such as Wasabi, MinIO, Backblaze B2, DigitalOcean Spaces,
+// Scaleway, or Hippius S3. Build it with NewS3CompatibleProviderSource.
+//
+// Provider "s3" keeps AWS defaults and "r2" keeps R2 defaults; any other
+// provider requires EndpointURL and uses path-style addressing unless
+// ForcePathStyle is set to false.
+type S3CompatibleProviderSource struct {
+	Provider        string `json:"provider"`
+	Driver          string `json:"driver,omitempty"`
+	SourceID        string `json:"source_id,omitempty"`
+	Bucket          string `json:"bucket"`
+	Key             string `json:"key"`
+	Region          string `json:"region,omitempty"`
+	EndpointURL     string `json:"endpoint_url,omitempty"`
+	AccessKeyID     string `json:"access_key_id"`
+	SecretAccessKey string `json:"secret_access_key"`
+	SessionToken    string `json:"session_token,omitempty"`
+	ForcePathStyle  *bool  `json:"force_path_style,omitempty"`
+	AccountID       string `json:"account_id,omitempty"`
+}
+
+// S3CompatibleProviderDestination is the destination form of S3CompatibleProviderSource.
+type S3CompatibleProviderDestination struct {
+	Provider        string `json:"provider"`
+	Driver          string `json:"driver,omitempty"`
+	DestinationID   string `json:"destination_id,omitempty"`
+	Bucket          string `json:"bucket"`
+	Key             string `json:"key"`
+	Region          string `json:"region,omitempty"`
+	EndpointURL     string `json:"endpoint_url,omitempty"`
+	AccessKeyID     string `json:"access_key_id"`
+	SecretAccessKey string `json:"secret_access_key"`
+	SessionToken    string `json:"session_token,omitempty"`
+	ForcePathStyle  *bool  `json:"force_path_style,omitempty"`
+	AccountID       string `json:"account_id,omitempty"`
 }
 
 type HippiusProviderSource struct {
@@ -376,6 +556,9 @@ type S3ProviderDestination struct {
 	SecretAccessKey string `json:"secret_access_key"`
 	SessionToken    string `json:"session_token,omitempty"`
 	EndpointURL     string `json:"endpoint_url,omitempty"`
+	// ForcePathStyle overrides addressing; nil keeps the AWS SDK default
+	// (virtual-hosted) for S3.
+	ForcePathStyle *bool `json:"force_path_style,omitempty"`
 }
 
 type R2ProviderDestination struct {

@@ -5,11 +5,13 @@ import (
 	"context"
 	crand "crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -18,12 +20,31 @@ import (
 	"github.com/vmihailenco/msgpack/v5"
 )
 
-const transferClientSchemaVersion = "transfer-client-control/v6"
+const transferClientSchemaVersion = "transfer-client-control/v7"
 const sdkMaxReconnects = -1
 
 // NATS enforces max_payload per message. This SDK guard splits signed-route
 // control messages before the broker rejects them; transfer bytes never use NATS.
 const defaultMaxPayloadBytes = 8 * 1024 * 1024
+
+// Route batches target 4 MiB physical messages below the maxPayloadBytes guard.
+const routeTargetPayloadBytes = 4 * 1024 * 1024
+
+// Route batch estimates reserve room for the live SDK auth token.
+const routeBatchAuthTokenEstimateBytes = 64 * 1024
+
+// Cached SDK auth tokens are refreshed before their final 30 seconds.
+const authTokenRefreshSafetySeconds = 30
+
+const lifecycleRequestMaxAttempts = 3
+
+const runtimeHelloInterval = 5 * time.Second
+
+const defaultSubjectPrefix = "beam.transfer.client"
+
+const defaultRequestTimeout = 30 * time.Second
+
+var lifecycleRequestRetryDelays = []time.Duration{150 * time.Millisecond, 500 * time.Millisecond}
 
 func newTransferID() string {
 	var b [16]byte
@@ -64,22 +85,76 @@ type natsControl struct {
 	terminalWaiters   map[*TransferTerminalSignalWaiter]struct{}
 	recoveryMu        sync.Mutex
 	recoveryLeases    map[string]*recoveryLease
-	recoveryRunning   map[string]bool
+	recoveryRunning   map[string]*recoveryRun
 	recoveryRequested map[string][2]string
 	runtimeEpochs     map[int][2]string
 	helloMonitors     map[int]context.CancelFunc
 	backgroundCtx     context.Context
 	backgroundStop    context.CancelFunc
 	closed            bool
+	signerMu          sync.Mutex
+	recoverySigners   map[*func()]func()
+	signersClosed     bool
+	// requestOverride replaces the NATS request/reply exchange in tests.
+	requestOverride func(ctx context.Context, subject string, data []byte) ([]byte, error)
 }
 
-type lifecycleRequestError struct {
-	status int
-	body   string
+func (c *natsControl) serveIntegritySigner(transferID string, handler func(context.Context, *IntegrityAuditChallenge) (map[string]any, error)) (func(), error) {
+	nc, err := c.connection()
+	if err != nil {
+		return nil, err
+	}
+	subject := fmt.Sprintf("%s.%s.sdk.%s.transfer.%s.integrity_sign", c.subjectPrefix, c.environment, c.keyPrefix, transferID)
+	sub, err := nc.Subscribe(subject, func(message *nats.Msg) {
+		var request struct {
+			Schema      string                  `json:"schema_version"`
+			Capability  string                  `json:"capability"`
+			Producer    string                  `json:"producer"`
+			Environment string                  `json:"environment"`
+			KeyPrefix   string                  `json:"key_prefix"`
+			TransferID  string                  `json:"transfer_id"`
+			RequestID   string                  `json:"request_id"`
+			Challenge   IntegrityAuditChallenge `json:"challenge"`
+		}
+		if json.Unmarshal(message.Data, &request) != nil || request.Schema != transferClientSchemaVersion || request.Capability != "integrity-signing/v1" || request.Producer != "transfer-runtime" || request.Environment != c.environment || request.KeyPrefix != c.keyPrefix || request.TransferID != transferID || request.Challenge.TransferID != transferID || request.RequestID == "" {
+			_ = message.Respond([]byte(`{"retry":true}`))
+			return
+		}
+		ctx, cancel := context.WithTimeout(c.backgroundCtx, 30*time.Second)
+		defer cancel()
+		payload, err := handler(ctx, &request.Challenge)
+		if err != nil {
+			_ = message.Respond([]byte(`{"retry":true}`))
+			return
+		}
+		body, err := json.Marshal(map[string]any{"schema_version": transferClientSchemaVersion, "capability": "integrity-signing/v1", "environment": c.environment, "key_prefix": c.keyPrefix, "transfer_id": transferID, "request_id": request.RequestID, "payload": payload})
+		if err == nil {
+			_ = message.Respond(body)
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+	_ = sub.SetPendingLimits(32, c.maxPayloadBytes*2)
+	if err := nc.Flush(); err != nil {
+		_ = sub.Unsubscribe()
+		return nil, err
+	}
+	return func() { _ = sub.Unsubscribe() }, nil
 }
 
-func (e *lifecycleRequestError) Error() string {
-	return fmt.Sprintf("beam lifecycle request failed (%d): %s", e.status, e.body)
+// LifecycleRequestError is a non-success reply from Beam lifecycle control.
+// Status is the reply status (408, 425, 429, and 5xx are retried), Code and
+// Message come from the reply error, and Body is the JSON-encoded error.
+type LifecycleRequestError struct {
+	Status  int
+	Code    string
+	Message string
+	Body    string
+}
+
+func (e *LifecycleRequestError) Error() string {
+	return fmt.Sprintf("beam lifecycle request failed (%d): %s", e.Status, e.Body)
 }
 
 type recoveryLease struct {
@@ -87,8 +162,20 @@ type recoveryLease struct {
 	shardID            int
 	planFingerprint    string
 	coordinateChecksum string
-	replayRoutes       func(context.Context, string) error
-	dispose            func()
+	// ownership is the owner's fence; once it is done the lease never sends
+	// transfer.resume or replays routes again.
+	ownership    context.Context
+	replayRoutes func(context.Context, string) error
+	dispose      func()
+}
+
+// recoveryRun is one background recovery loop for one lease. Its identity,
+// not the transfer id, decides whether a finishing loop may clear the running
+// registration, and cancelling it stops a loop whose lease was replaced.
+type recoveryRun struct {
+	lease  *recoveryLease
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 func newNatsControl(apiKey, natsURL, environment string, shardCount int) *natsControl {
@@ -104,16 +191,17 @@ func newNatsControl(apiKey, natsURL, environment string, shardCount int) *natsCo
 		keyPrefix:         keyPrefix(apiKey),
 		natsURL:           strings.TrimRight(natsURL, "/"),
 		environment:       environment,
-		subjectPrefix:     "beam.transfer.client",
+		subjectPrefix:     defaultSubjectPrefix,
 		shardCount:        shardCount,
-		requestTimeout:    30 * time.Second,
+		requestTimeout:    defaultRequestTimeout,
 		maxPayloadBytes:   defaultMaxPayloadBytes,
 		terminalWaiters:   make(map[*TransferTerminalSignalWaiter]struct{}),
 		recoveryLeases:    make(map[string]*recoveryLease),
-		recoveryRunning:   make(map[string]bool),
+		recoveryRunning:   make(map[string]*recoveryRun),
 		recoveryRequested: make(map[string][2]string),
 		runtimeEpochs:     make(map[int][2]string),
 		helloMonitors:     make(map[int]context.CancelFunc),
+		recoverySigners:   make(map[*func()]func()),
 		backgroundCtx:     backgroundCtx,
 		backgroundStop:    backgroundStop,
 	}
@@ -135,6 +223,16 @@ func (c *natsControl) close() {
 	}
 	clear(c.terminalWaiters)
 	c.connectionMu.Unlock()
+	c.signerMu.Lock()
+	c.signersClosed = true
+	signerStops := make([]func(), 0, len(c.recoverySigners))
+	for _, stop := range c.recoverySigners {
+		signerStops = append(signerStops, stop)
+	}
+	c.signerMu.Unlock()
+	for _, stop := range signerStops {
+		stop()
+	}
 	c.recoveryMu.Lock()
 	for _, lease := range c.recoveryLeases {
 		if lease.dispose != nil {
@@ -273,16 +371,52 @@ func (c *natsControl) requestOnShard(ctx context.Context, messageType string, pa
 	if strings.TrimSpace(c.apiKey) == "" {
 		return fmt.Errorf("api key is required")
 	}
-	token, err := c.authTokenValue(ctx)
-	if err != nil {
-		return err
-	}
 	idempotencyKey := ""
 	if len(idempotencyKeys) > 0 {
 		idempotencyKey = idempotencyKeys[0]
 	}
+	// The request identity and timestamp stay fixed across attempts so BeamCore
+	// deduplicates retries; only an expired auth token is replaced.
 	requestID := lifecycleRequestID(messageType, idempotencyKey)
-	envelope := map[string]any{
+	occurredAt := time.Now().UTC().Format(time.RFC3339Nano)
+	subject := c.requestSubject(messageType, shardID)
+	var lastErr error
+	for attempt := 0; attempt < lifecycleRequestMaxAttempts; attempt++ {
+		retry, err := c.requestAttempt(ctx, messageType, payload, shardID, subject, requestID, occurredAt, output, attempt)
+		if err == nil {
+			return nil
+		}
+		if !retry || attempt+1 >= lifecycleRequestMaxAttempts {
+			return err
+		}
+		lastErr = err
+		if sleepErr := sleepWithJitter(ctx, lifecycleRetryDelay(attempt)); sleepErr != nil {
+			return sleepErr
+		}
+	}
+	return lastErr
+}
+
+// requestAttempt sends one lifecycle request and reports whether its failure may be retried.
+func (c *natsControl) requestAttempt(
+	ctx context.Context,
+	messageType string,
+	payload map[string]any,
+	shardID int,
+	subject string,
+	requestID string,
+	occurredAt string,
+	output any,
+	attempt int,
+) (bool, error) {
+	token, err := c.authTokenValue(ctx)
+	if err != nil {
+		if ctx.Err() != nil {
+			return false, ctx.Err()
+		}
+		return isRetryableNATSError(err), err
+	}
+	data, err := marshalMsgpack(map[string]any{
 		"message_id":     fmt.Sprintf("%s:%s:%s:%s:%s", transferClientSchemaVersion, c.environment, c.keyPrefix, messageType, requestID),
 		"schema_version": transferClientSchemaVersion,
 		"environment":    c.environment,
@@ -291,93 +425,115 @@ func (c *natsControl) requestOnShard(ctx context.Context, messageType string, pa
 		"message_type":   messageType,
 		"request_id":     requestID,
 		"auth_token":     token,
-		"occurred_at":    time.Now().UTC().Format(time.RFC3339Nano),
+		"occurred_at":    occurredAt,
 		"producer":       "sdk",
 		"payload":        payload,
-	}
-	data, err := marshalMsgpack(envelope)
+	})
 	if err != nil {
-		return err
+		return false, err
 	}
 	if len(data) > c.maxPayloadBytes {
-		return fmt.Errorf("NATS lifecycle request is %d bytes, above maxPayloadBytes=%d", len(data), c.maxPayloadBytes)
+		return false, fmt.Errorf("NATS lifecycle request is %d bytes, above maxPayloadBytes=%d", len(data), c.maxPayloadBytes)
 	}
-	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
-		nc, connectionErr := c.connection()
-		if connectionErr != nil {
-			if !isRetryableNATSError(connectionErr) {
-				return connectionErr
-			}
-			lastErr = connectionErr
-			if attempt == 2 {
-				break
-			}
-			base := []time.Duration{150 * time.Millisecond, 500 * time.Millisecond}[attempt]
-			delay := time.Duration(float64(base) * (0.8 + rand.Float64()*0.4))
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(delay):
-			}
-			continue
+	reply, err := c.natsRequest(ctx, subject, data)
+	if err != nil {
+		if ctx.Err() != nil {
+			return false, ctx.Err()
 		}
-		requestCtx, cancel := context.WithTimeout(ctx, c.requestTimeout)
-		msg, requestErr := nc.RequestWithContext(requestCtx, c.requestSubject(messageType, shardID), data)
-		cancel()
-		if requestErr == nil {
-			var decoded map[string]any
-			if decodeErr := msgpack.Unmarshal(msg.Data, &decoded); decodeErr != nil {
-				return decodeErr
-			}
-			c.observeRuntimeEpochs(shardID, decoded)
-			if ok, _ := decoded["ok"].(bool); ok {
-				if output == nil {
-					return nil
-				}
-				encoded, encodeErr := json.Marshal(decoded["payload"])
-				if encodeErr != nil {
-					return encodeErr
-				}
-				return json.Unmarshal(encoded, output)
-			} else {
-				body, _ := json.Marshal(decoded["error"])
-				status := intValue(decoded["status"])
-				if status == 0 {
-					status = 500
-				}
-				lastErr = &lifecycleRequestError{status: status, body: string(body)}
-				if status != 408 && status != 425 && status != 429 && status < 500 {
-					return lastErr
-				}
-			}
-		} else {
-			if !isRetryableNATSError(requestErr) {
-				return requestErr
-			}
-			lastErr = requestErr
-		}
-		if attempt == 2 {
-			break
-		}
-		base := []time.Duration{150 * time.Millisecond, 500 * time.Millisecond}[attempt]
-		delay := time.Duration(float64(base) * (0.8 + rand.Float64()*0.4))
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(delay):
-		}
+		return isRetryableNATSError(err), err
 	}
-	return lastErr
+	var decoded map[string]any
+	if err := msgpack.Unmarshal(reply, &decoded); err != nil {
+		return false, err
+	}
+	c.observeRuntimeEpochs(shardID, decoded)
+	if ok, _ := decoded["ok"].(bool); ok {
+		if output == nil {
+			return false, nil
+		}
+		encoded, err := json.Marshal(decoded["payload"])
+		if err != nil {
+			return false, err
+		}
+		return false, json.Unmarshal(encoded, output)
+	}
+	replyErr := newLifecycleRequestError(decoded)
+	if replyErr.Status == 401 && replyErr.Code == "auth_token_expired" && attempt+1 < lifecycleRequestMaxAttempts {
+		c.authMu.Lock()
+		if c.authToken == token {
+			c.authToken = ""
+			c.authExpiresAt = 0
+		}
+		c.authMu.Unlock()
+		return true, replyErr
+	}
+	return isRetryableLifecycleStatus(replyErr.Status), replyErr
+}
+
+// natsRequest performs one request/reply exchange bounded by the request timeout.
+func (c *natsControl) natsRequest(ctx context.Context, subject string, data []byte) ([]byte, error) {
+	requestCtx, cancel := context.WithTimeout(ctx, c.requestTimeout)
+	defer cancel()
+	if c.requestOverride != nil {
+		return c.requestOverride(requestCtx, subject, data)
+	}
+	nc, err := c.connection()
+	if err != nil {
+		return nil, err
+	}
+	msg, err := nc.RequestWithContext(requestCtx, subject, data)
+	if err != nil {
+		return nil, err
+	}
+	return msg.Data, nil
+}
+
+func newLifecycleRequestError(decoded map[string]any) *LifecycleRequestError {
+	errorBody := decoded["error"]
+	body := []byte("{}")
+	if errorBody != nil {
+		body, _ = json.Marshal(errorBody)
+	}
+	status := intValue(decoded["status"])
+	if status == 0 {
+		status = 500
+	}
+	code, message := "", ""
+	if fields, ok := errorBody.(map[string]any); ok {
+		code = stringValue(fields["code"])
+		message = stringValue(fields["message"])
+	}
+	return &LifecycleRequestError{Status: status, Code: code, Message: message, Body: string(body)}
+}
+
+func lifecycleRetryDelay(attempt int) time.Duration {
+	if attempt < len(lifecycleRequestRetryDelays) {
+		return lifecycleRequestRetryDelays[attempt]
+	}
+	return time.Second
+}
+
+func sleepWithJitter(ctx context.Context, base time.Duration) error {
+	timer := time.NewTimer(time.Duration(float64(base) * (0.8 + rand.Float64()*0.4)))
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func (c *natsControl) registerRecoveryLease(lease *recoveryLease) {
 	lease.shardID = transferShardID(lease.transferID, c.shardCount)
 	c.recoveryMu.Lock()
-	if previous := c.recoveryLeases[lease.transferID]; previous != nil && previous.dispose != nil {
+	if previous := c.recoveryLeases[lease.transferID]; previous != nil && previous != lease && previous.dispose != nil {
 		previous.dispose()
 	}
 	c.recoveryLeases[lease.transferID] = lease
+	// A loop recovering the replaced lease stops, so the new lease's recovery
+	// is scheduled rather than coalesced into the old loop.
+	c.stopRecoveryRunLocked(lease.transferID, lease)
 	if _, exists := c.helloMonitors[lease.shardID]; !exists {
 		monitorCtx, cancel := context.WithCancel(c.backgroundCtx)
 		c.helloMonitors[lease.shardID] = cancel
@@ -386,11 +542,30 @@ func (c *natsControl) registerRecoveryLease(lease *recoveryLease) {
 	c.recoveryMu.Unlock()
 }
 
+// releaseRecoveryLease releases whichever lease the transfer holds. Terminal
+// status and explicit cancellation use it; owners use releaseOwnedRecoveryLease.
 func (c *natsControl) releaseRecoveryLease(transferID string) {
+	c.releaseLease(transferID, nil)
+}
+
+// releaseOwnedRecoveryLease releases the lease only while it is still the
+// transfer's current lease, so a fenced owner never releases its replacement.
+func (c *natsControl) releaseOwnedRecoveryLease(lease *recoveryLease) {
+	if lease != nil {
+		c.releaseLease(lease.transferID, lease)
+	}
+}
+
+func (c *natsControl) releaseLease(transferID string, expected *recoveryLease) {
 	c.recoveryMu.Lock()
 	lease := c.recoveryLeases[transferID]
+	if expected != nil && lease != expected {
+		c.recoveryMu.Unlock()
+		return
+	}
 	delete(c.recoveryLeases, transferID)
 	delete(c.recoveryRequested, transferID)
+	c.stopRecoveryRunLocked(transferID, nil)
 	if lease != nil {
 		hasShardLease := false
 		for _, candidate := range c.recoveryLeases {
@@ -412,10 +587,14 @@ func (c *natsControl) releaseRecoveryLease(transferID string) {
 	}
 }
 
-func (c *natsControl) continueRecoveryLease(transferID string) {
-	c.recoveryMu.Lock()
-	lease := c.recoveryLeases[transferID]
+// continueRecoveryLease schedules background recovery for the lease while it
+// is still the transfer's current lease.
+func (c *natsControl) continueRecoveryLease(lease *recoveryLease) {
 	if lease == nil {
+		return
+	}
+	c.recoveryMu.Lock()
+	if c.recoveryLeases[lease.transferID] != lease {
 		c.recoveryMu.Unlock()
 		return
 	}
@@ -423,14 +602,37 @@ func (c *natsControl) continueRecoveryLease(transferID string) {
 	if !exists {
 		requestedEpoch = [2]string{"foreground", newTransferID()}
 	}
-	c.recoveryRequested[transferID] = requestedEpoch
-	if c.recoveryRunning[transferID] {
-		c.recoveryMu.Unlock()
-		return
-	}
-	c.recoveryRunning[transferID] = true
+	c.recoveryRequested[lease.transferID] = requestedEpoch
+	run := c.startRecoveryRunLocked(lease)
 	c.recoveryMu.Unlock()
-	go c.recoverTransfer(lease)
+	if run != nil {
+		go c.recoverTransfer(run)
+	}
+}
+
+// startRecoveryRunLocked registers a new recovery loop for the lease, unless
+// one for this same lease is already running. A loop for a replaced lease is
+// cancelled. The caller holds recoveryMu and starts the returned run.
+func (c *natsControl) startRecoveryRunLocked(lease *recoveryLease) *recoveryRun {
+	if existing := c.recoveryRunning[lease.transferID]; existing != nil {
+		if existing.lease == lease {
+			return nil
+		}
+		existing.cancel()
+	}
+	ctx, cancel := context.WithCancel(c.backgroundCtx)
+	run := &recoveryRun{lease: lease, ctx: ctx, cancel: cancel}
+	c.recoveryRunning[lease.transferID] = run
+	return run
+}
+
+// stopRecoveryRunLocked cancels and unregisters the transfer's recovery loop
+// unless it recovers keep. The caller holds recoveryMu.
+func (c *natsControl) stopRecoveryRunLocked(transferID string, keep *recoveryLease) {
+	if run := c.recoveryRunning[transferID]; run != nil && (keep == nil || run.lease != keep) {
+		run.cancel()
+		delete(c.recoveryRunning, transferID)
+	}
 }
 
 func (c *natsControl) observeRuntimeEpochs(shardID int, envelope map[string]any) {
@@ -444,14 +646,13 @@ func (c *natsControl) observeRuntimeEpochs(shardID int, envelope map[string]any)
 	current := [2]string{runtimeEpoch, transportEpoch}
 	c.runtimeEpochs[shardID] = current
 	changed := existed && previous != current
-	leases := make([]*recoveryLease, 0)
+	runs := make([]*recoveryRun, 0)
 	if changed {
 		for _, lease := range c.recoveryLeases {
 			if lease.shardID == shardID {
 				c.recoveryRequested[lease.transferID] = current
-				if !c.recoveryRunning[lease.transferID] {
-					c.recoveryRunning[lease.transferID] = true
-					leases = append(leases, lease)
+				if run := c.startRecoveryRunLocked(lease); run != nil {
+					runs = append(runs, run)
 				}
 			}
 		}
@@ -463,17 +664,19 @@ func (c *natsControl) observeRuntimeEpochs(shardID int, envelope map[string]any)
 		c.authExpiresAt = 0
 		c.authMu.Unlock()
 	}
-	for _, lease := range leases {
-		go c.recoverTransfer(lease)
+	for _, run := range runs {
+		go c.recoverTransfer(run)
 	}
 }
 
 func (c *natsControl) monitorRuntime(ctx context.Context, shardID int) {
-	ticker := time.NewTicker(2 * time.Second)
+	ticker := time.NewTicker(runtimeHelloInterval)
 	defer ticker.Stop()
 	for {
 		requestCtx, cancel := context.WithTimeout(ctx, c.requestTimeout)
-		_ = c.requestOnShard(requestCtx, "runtime.hello", map[string]any{}, "", shardID, nil, fmt.Sprintf("runtime-hello:%d", shardID))
+		if err := c.requestOnShard(requestCtx, "runtime.hello", map[string]any{"capabilities": []string{"integrity-signing/v1"}}, "", shardID, nil, fmt.Sprintf("runtime-hello:%d:integrity", shardID)); err != nil {
+			_ = c.requestOnShard(requestCtx, "runtime.hello", map[string]any{}, "", shardID, nil, fmt.Sprintf("runtime-hello:%d", shardID))
+		}
 		cancel()
 		select {
 		case <-ctx.Done():
@@ -483,18 +686,34 @@ func (c *natsControl) monitorRuntime(ctx context.Context, shardID int) {
 	}
 }
 
-func (c *natsControl) recoverTransfer(lease *recoveryLease) {
+// recoveryRunCurrent reports whether the run is still the transfer's
+// registered loop, its lease is still current, and its owner is not fenced.
+// It returns the newest requested epoch.
+func (c *natsControl) recoveryRunCurrent(run *recoveryRun) ([2]string, bool) {
+	lease := run.lease
+	c.recoveryMu.Lock()
+	defer c.recoveryMu.Unlock()
+	current := c.recoveryRunning[lease.transferID] == run && c.recoveryLeases[lease.transferID] == lease &&
+		run.ctx.Err() == nil && ownershipErr(lease.ownership) == nil
+	return c.recoveryRequested[lease.transferID], current
+}
+
+func (c *natsControl) recoverTransfer(run *recoveryRun) {
+	lease := run.lease
 	defer func() {
 		c.recoveryMu.Lock()
-		delete(c.recoveryRunning, lease.transferID)
+		if c.recoveryRunning[lease.transferID] == run {
+			delete(c.recoveryRunning, lease.transferID)
+		}
 		c.recoveryMu.Unlock()
+		run.cancel()
 	}()
 	for attempt := 0; ; attempt++ {
-		c.recoveryMu.Lock()
-		current := c.recoveryLeases[lease.transferID]
-		requestedEpoch := c.recoveryRequested[lease.transferID]
-		c.recoveryMu.Unlock()
-		if current != lease {
+		requestedEpoch, current := c.recoveryRunCurrent(run)
+		if !current {
+			if ownershipErr(lease.ownership) != nil {
+				c.releaseOwnedRecoveryLease(lease)
+			}
 			return
 		}
 		generationID := newTransferID()
@@ -503,7 +722,7 @@ func (c *natsControl) recoverTransfer(lease *recoveryLease) {
 			RouteReplayRequired bool   `json:"route_replay_required"`
 		}
 		err := c.request(
-			c.backgroundCtx,
+			run.ctx,
 			"transfer.resume",
 			map[string]any{
 				"transfer_id":         lease.transferID,
@@ -516,26 +735,41 @@ func (c *natsControl) recoverTransfer(lease *recoveryLease) {
 			fmt.Sprintf("transfer:%s:resume:%s", lease.transferID, generationID),
 		)
 		if err == nil && result.Recovery == "terminal" {
-			c.releaseRecoveryLease(lease.transferID)
+			c.releaseOwnedRecoveryLease(lease)
 			return
 		}
-		if err == nil && result.RouteReplayRequired {
-			err = lease.replayRoutes(c.backgroundCtx, generationID)
+		if err == nil && (result.RouteReplayRequired || result.Recovery == "route_replay_required") {
+			if _, current := c.recoveryRunCurrent(run); !current {
+				if ownershipErr(lease.ownership) != nil {
+					c.releaseOwnedRecoveryLease(lease)
+				}
+				return
+			}
+			err = lease.replayRoutes(run.ctx, generationID)
 		}
 		if err == nil {
 			c.recoveryMu.Lock()
-			latestEpoch := c.recoveryRequested[lease.transferID]
-			if latestEpoch != requestedEpoch {
+			if c.recoveryRunning[lease.transferID] != run {
+				c.recoveryMu.Unlock()
+				return
+			}
+			if c.recoveryRequested[lease.transferID] != requestedEpoch {
 				c.recoveryMu.Unlock()
 				attempt = 0
 				continue
 			}
+			// Clearing the registration under the same lock as the epoch check
+			// means a request arriving afterwards starts a new loop.
 			delete(c.recoveryRunning, lease.transferID)
 			c.recoveryMu.Unlock()
 			return
 		}
+		if run.ctx.Err() != nil {
+			// Superseded, released, or closed: the replacement decides.
+			return
+		}
 		if !isRetryableLifecycleError(err) {
-			c.releaseRecoveryLease(lease.transferID)
+			c.releaseOwnedRecoveryLease(lease)
 			return
 		}
 		delay := time.Duration(1<<min(attempt, 6)) * 500 * time.Millisecond
@@ -543,10 +777,12 @@ func (c *natsControl) recoverTransfer(lease *recoveryLease) {
 			delay = 30 * time.Second
 		}
 		delay = time.Duration(float64(delay) * (0.8 + rand.Float64()*0.4))
+		timer := time.NewTimer(delay)
 		select {
-		case <-c.backgroundCtx.Done():
+		case <-run.ctx.Done():
+			timer.Stop()
 			return
-		case <-time.After(delay):
+		case <-timer.C:
 		}
 	}
 }
@@ -562,17 +798,35 @@ func lifecycleRequestID(messageType string, idempotencyKey string) string {
 	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", bytes[0:4], bytes[4:6], bytes[6:8], bytes[8:10], bytes[10:16])
 }
 
+// splitRoutes packs routes into physical batches that target 4 MiB, or
+// maxPayloadBytes when that is lower. A single route above the target but within
+// maxPayloadBytes is sent alone; one above maxPayloadBytes fails before publication.
 func (c *natsControl) splitRoutes(messageType string, basePayload map[string]any, routes []SignedChunkRoute) ([][]SignedChunkRoute, error) {
+	targetPayloadBytes := min(c.maxPayloadBytes, routeTargetPayloadBytes)
+	authTokenEstimate := strings.Repeat("x", min(routeBatchAuthTokenEstimateBytes, max(512, c.maxPayloadBytes/128)))
+	occurredAt := time.Now().UTC().Format(time.RFC3339Nano)
 	encodedSize := func(candidate []SignedChunkRoute) (int, error) {
-		payload := map[string]any{}
-		for k, v := range basePayload {
-			payload[k] = v
+		payload := make(map[string]any, len(basePayload)+1)
+		for key, value := range basePayload {
+			payload[key] = value
 		}
 		payload["route_batch"] = compactSignedRoutes(candidate)
-		envelope := map[string]any{"schema_version": transferClientSchemaVersion, "auth_token": strings.Repeat("x", 512), "payload": payload, "message_type": messageType}
-		data, encodeErr := marshalMsgpack(envelope)
-		if encodeErr != nil {
-			return 0, encodeErr
+		// The live JWT is larger than a compact placeholder once claims and signatures
+		// are encoded, so the estimate reserves room for token and envelope growth.
+		data, err := marshalMsgpack(map[string]any{
+			"schema_version": transferClientSchemaVersion,
+			"environment":    c.environment,
+			"key_prefix":     c.keyPrefix,
+			"shard_id":       0,
+			"message_type":   messageType,
+			"request_id":     "00000000-0000-4000-8000-000000000000",
+			"auth_token":     authTokenEstimate,
+			"occurred_at":    occurredAt,
+			"producer":       "sdk",
+			"payload":        payload,
+		})
+		if err != nil {
+			return 0, err
 		}
 		return len(data), nil
 	}
@@ -588,7 +842,7 @@ func (c *natsControl) splitRoutes(messageType string, basePayload map[string]any
 			if err != nil {
 				return nil, err
 			}
-			if size <= c.maxPayloadBytes {
+			if size <= targetPayloadBytes {
 				accepted = count
 				low = count + 1
 			} else {
@@ -600,7 +854,10 @@ func (c *natsControl) splitRoutes(messageType string, basePayload map[string]any
 			if err != nil {
 				return nil, err
 			}
-			return nil, fmt.Errorf("single signed route is %d bytes, above max_payload_bytes=%d", size, c.maxPayloadBytes)
+			if size > c.maxPayloadBytes {
+				return nil, fmt.Errorf("single signed route is %d bytes, above maxPayloadBytes=%d", size, c.maxPayloadBytes)
+			}
+			accepted = 1
 		}
 		chunks = append(chunks, routes[offset:offset+accepted])
 		offset += accepted
@@ -609,7 +866,7 @@ func (c *natsControl) splitRoutes(messageType string, basePayload map[string]any
 }
 
 var routeAttemptMetadataKeys = map[string]struct{}{
-	"part_number": {}, "logical_attempt_index": {}, "attempt_slot": {}, "route_generation_id": {},
+	"etag_required": {}, "part_number": {}, "logical_attempt_index": {}, "attempt_slot": {}, "route_generation_id": {},
 }
 
 func compactSignedRoutes(routes []SignedChunkRoute) map[string]any {
@@ -640,11 +897,10 @@ func compactSignedRoutes(routes []SignedChunkRoute) map[string]any {
 			metadata[key] = value
 		}
 		deliveryIndex := routeIndex
-		if route.DeliveryIndex > 0 {
-			deliveryIndex = route.DeliveryIndex
-		}
-		if value, ok := metadata["delivery_index"]; ok {
-			deliveryIndex = intValue(value)
+		if route.DeliveryIndex != nil {
+			deliveryIndex = *route.DeliveryIndex
+		} else if value, ok := exactIntegerValue(metadata["delivery_index"]); ok && value >= 0 {
+			deliveryIndex = value
 		}
 		for _, key := range []string{"source_id", "destination_id", "chunk_index", "route_chunk_index", "delivery_index"} {
 			delete(metadata, key)
@@ -682,6 +938,8 @@ func marshalMsgpack(value any) ([]byte, error) {
 	var buffer bytes.Buffer
 	encoder := msgpack.NewEncoder(&buffer)
 	encoder.SetCustomStructTag("json")
+	// Sorted keys keep encoding deterministic, so a retried request is byte-identical.
+	encoder.SetSortMapKeys(true)
 	if err := encoder.Encode(value); err != nil {
 		return nil, err
 	}
@@ -700,15 +958,7 @@ func (c *natsControl) connection() (*nats.Conn, error) {
 	if c.nc != nil && !c.nc.IsClosed() {
 		return c.nc, nil
 	}
-	nc, err := nats.Connect(
-		c.natsURL,
-		nats.UserInfo(c.keyPrefix, c.apiKey),
-		nats.Name("beam-go-sdk-"+c.keyPrefix),
-		nats.MaxReconnects(sdkMaxReconnects),
-		nats.ReconnectWait(time.Second),
-		nats.ReconnectJitter(250*time.Millisecond, time.Second),
-		nats.RetryOnFailedConnect(true),
-	)
+	nc, err := nats.Connect(c.natsURL, natsConnectOptions(c.natsURL, c.apiKey, c.keyPrefix)...)
 	if err != nil {
 		return nil, err
 	}
@@ -716,10 +966,35 @@ func (c *natsControl) connection() (*nats.Conn, error) {
 	return nc, nil
 }
 
+// natsConnectOptions builds the connection options. The tls:// gateway expects
+// the TLS handshake before it sends INFO, so the client starts TLS first and
+// presents the gateway hostname for SNI and certificate verification.
+func natsConnectOptions(natsURL string, apiKey string, keyPrefix string) []nats.Option {
+	options := []nats.Option{
+		nats.UserInfo(keyPrefix, apiKey),
+		nats.Name("beam-go-sdk-" + keyPrefix),
+		nats.MaxReconnects(sdkMaxReconnects),
+		nats.ReconnectWait(time.Second),
+		nats.ReconnectJitter(500*time.Millisecond, time.Second),
+		// A failed first connect fails fast, as the TypeScript connect() does,
+		// so a rejected API key surfaces immediately. Reconnects after a
+		// successful connect stay unbounded.
+		nats.RetryOnFailedConnect(false),
+	}
+	if strings.HasPrefix(strings.ToLower(natsURL), "tls://") {
+		tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
+		if parsed, err := url.Parse(natsURL); err == nil && parsed.Hostname() != "" {
+			tlsConfig.ServerName = parsed.Hostname()
+		}
+		options = append(options, nats.Secure(tlsConfig), nats.TLSHandshakeFirst())
+	}
+	return options
+}
+
 func (c *natsControl) authTokenValue(ctx context.Context) (string, error) {
 	for {
 		c.authMu.Lock()
-		if c.authToken != "" && c.authExpiresAt-5 > time.Now().Unix() {
+		if c.authToken != "" && c.authExpiresAt-authTokenRefreshSafetySeconds > time.Now().Unix() {
 			token := c.authToken
 			c.authMu.Unlock()
 			return token, nil
@@ -752,46 +1027,32 @@ func (c *natsControl) authTokenValue(ctx context.Context) (string, error) {
 }
 
 func (c *natsControl) resolveAuthToken(ctx context.Context) (string, int64, error) {
-	var msg *nats.Msg
+	var reply []byte
 	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := 0; attempt < lifecycleRequestMaxAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return "", 0, err
 		}
-		nc, connectionErr := c.connection()
-		if connectionErr != nil {
-			if !isRetryableNATSError(connectionErr) {
-				return "", 0, connectionErr
-			}
-			lastErr = connectionErr
-		} else {
-			requestCtx, cancel := context.WithTimeout(ctx, c.requestTimeout)
-			var requestErr error
-			msg, requestErr = nc.RequestWithContext(requestCtx, c.authSubject(), []byte("{}"))
-			cancel()
-			if requestErr == nil {
-				break
-			}
-			if !isRetryableNATSError(requestErr) {
-				return "", 0, requestErr
-			}
-			lastErr = requestErr
+		var requestErr error
+		reply, requestErr = c.natsRequest(ctx, c.authSubject(), []byte("{}"))
+		if requestErr == nil {
+			break
 		}
-		if attempt < 2 {
-			base := []time.Duration{150 * time.Millisecond, 500 * time.Millisecond}[attempt]
-			delay := time.Duration(float64(base) * (0.8 + rand.Float64()*0.4))
-			select {
-			case <-ctx.Done():
-				return "", 0, ctx.Err()
-			case <-time.After(delay):
+		if !isRetryableNATSError(requestErr) {
+			return "", 0, requestErr
+		}
+		lastErr = requestErr
+		if attempt+1 < lifecycleRequestMaxAttempts {
+			if err := sleepWithJitter(ctx, lifecycleRetryDelay(attempt)); err != nil {
+				return "", 0, err
 			}
 		}
 	}
-	if msg == nil {
+	if reply == nil {
 		return "", 0, lastErr
 	}
 	var parsed sdkAuthResolveResponse
-	if decodeErr := json.Unmarshal(msg.Data, &parsed); decodeErr != nil {
+	if decodeErr := json.Unmarshal(reply, &parsed); decodeErr != nil {
 		return "", 0, decodeErr
 	}
 	if !parsed.OK || parsed.Token == "" {
@@ -808,7 +1069,17 @@ func isRetryableNATSError(err error) bool {
 	if err == nil {
 		return false
 	}
+	if errors.Is(err, nats.ErrAuthorization) || errors.Is(err, nats.ErrAuthExpired) || errors.Is(err, nats.ErrAuthRevoked) {
+		return false
+	}
 	normalized := strings.ToLower(err.Error())
+	// Credential rejections never succeed on retry, even when the server also
+	// closed the connection.
+	for _, token := range []string{"authorization violation", "authentication expired", "authentication revoked", "permissions violation"} {
+		if strings.Contains(normalized, token) {
+			return false
+		}
+	}
 	for _, token := range []string{
 		"timeout",
 		"deadline exceeded",
@@ -829,10 +1100,14 @@ func isRetryableNATSError(err error) bool {
 	return false
 }
 
+func isRetryableLifecycleStatus(status int) bool {
+	return status == 408 || status == 425 || status == 429 || status >= 500
+}
+
 func isRetryableLifecycleError(err error) bool {
-	var lifecycleErr *lifecycleRequestError
+	var lifecycleErr *LifecycleRequestError
 	if errors.As(err, &lifecycleErr) {
-		return lifecycleErr.status == 408 || lifecycleErr.status == 425 || lifecycleErr.status == 429 || lifecycleErr.status >= 500
+		return isRetryableLifecycleStatus(lifecycleErr.Status)
 	}
 	return isRetryableNATSError(err)
 }
@@ -841,8 +1116,8 @@ func isRecoverableRouteStreamError(err error) bool {
 	if isRetryableLifecycleError(err) {
 		return true
 	}
-	var lifecycleErr *lifecycleRequestError
-	return errors.As(err, &lifecycleErr) && (lifecycleErr.status == 404 || lifecycleErr.status == 409)
+	var lifecycleErr *LifecycleRequestError
+	return errors.As(err, &lifecycleErr) && (lifecycleErr.Status == 404 || lifecycleErr.Status == 409)
 }
 
 func (c *natsControl) authSubject() string {

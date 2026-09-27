@@ -124,7 +124,7 @@ func huggingFaceLFSBatchURL(config huggingFaceConfig) string {
 
 type huggingFaceFileMetadata struct {
 	// URL is the credential-free presigned CDN URL the workers read from.
-	URL string
+	URL  string
 	Size int64
 	// ETag is the sha256 for an LFS blob, the git sha1 otherwise.
 	ETag       string
@@ -162,7 +162,7 @@ func huggingFaceFileMetadataFor(
 	// Compression would report a transformed length instead of the real object size.
 	request.Header.Set("Accept-Encoding", "identity")
 
-	client := *httpClient
+	client := *httpClientOrDefault(httpClient)
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	response, err := client.Do(request)
 	if err != nil {
@@ -289,8 +289,8 @@ func huggingFaceLFSBatch(
 
 	var payload struct {
 		Objects []struct {
-			OID     string `json:"oid"`
-			Size    int64  `json:"size"`
+			OID     string                    `json:"oid"`
+			Size    int64                     `json:"size"`
 			Error   *struct{ Message string } `json:"error"`
 			Actions *struct {
 				Upload *struct {
@@ -682,8 +682,8 @@ type huggingFaceUploadState struct {
 	VerifyHref    string
 
 	// partETags resolves alongside the transfer; it is only read at commit time.
-	partETags    []string
-	partETagsErr error
+	partETags     []string
+	partETagsErr  error
 	partETagsDone chan struct{}
 }
 

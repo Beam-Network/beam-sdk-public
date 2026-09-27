@@ -2,7 +2,6 @@ package beamnetworksdk
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -25,122 +24,6 @@ func TestRouteMessageDefaultOverrideAndRecoveryError(t *testing.T) {
 		t.Fatalf("recovery error did not retain identity and cause: %v", pending)
 	}
 }
-
-type fakeTransferControl struct {
-	calls                       []fakeTransferCall
-	recoveryLeases              map[string]*recoveryLease
-	recoveryPresentAtRouteBegin bool
-	continuedRecovery           []string
-	failOnceAt                  string
-}
-
-type fakeTransferCall struct {
-	messageType    string
-	payload        map[string]any
-	transferID     string
-	idempotencyKey string
-}
-
-func (fake *fakeTransferControl) request(_ context.Context, messageType string, payload map[string]any, transferID string, output any, idempotencyKeys ...string) error {
-	idempotencyKey := ""
-	if len(idempotencyKeys) > 0 {
-		idempotencyKey = idempotencyKeys[0]
-	}
-	fake.calls = append(fake.calls, fakeTransferCall{messageType: messageType, payload: payload, transferID: transferID, idempotencyKey: idempotencyKey})
-	if messageType == "transfer.route_stream.begin" {
-		_, fake.recoveryPresentAtRouteBegin = fake.recoveryLeases[payload["transfer_id"].(string)]
-	}
-	if fake.failOnceAt == messageType {
-		fake.failOnceAt = ""
-		return errors.New("connection closed during route streaming")
-	}
-	var response any = map[string]any{"success": true}
-	switch messageType {
-	case "transfer.create":
-		response = map[string]any{
-			"success":            true,
-			"transfer_id":        payload["transfer_id"],
-			"total_chunks":       2,
-			"total_sources":      1,
-			"total_destinations": 1,
-		}
-	case "transfer.prepare":
-		source := map[string]any{"source_id": "src_0", "type": "http", "url": "https://source.example/file.bin", "size": 4096, "global_chunk_start": 0, "chunk_count": 1}
-		destination := map[string]any{"destination_id": "dst_0", "provider": "http", "mode": "http_chunks", "destination_index": 0, "final_object_keys": map[string]string{"src_0": "out/file.bin"}}
-		response = map[string]any{
-			"success":             true,
-			"transfer_id":         payload["transfer_id"],
-			"transfer_key":        "tk_go",
-			"chunk_size":          4096,
-			"total_size":          4096,
-			"total_sources":       1,
-			"total_destinations":  1,
-			"logical_chunks":      1,
-			"total_chunks":        1,
-			"signed_url_flow":     "signed_url",
-			"plan_fingerprint":    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-			"coordinate_checksum": "sha256-xor-v1:1:0000000000000000000000000000000000000000000000000000000000000000",
-			"route_generation_id": payload["route_generation_id"],
-			"plan_descriptor": map[string]any{
-				"version": "compact-transfer-plan/v1", "plan_nonce": "testplan", "chunk_size": 4096,
-				"multipart_attempt_slots": 3,
-				"sources":                 []any{source}, "destinations": []any{destination},
-				"logical_chunk_count": 1, "delivery_route_count": 1,
-				"formulas": map[string]string{
-					"source_offset":       "source_chunk_index * chunk_size",
-					"delivery_index":      "chunk_index * destination_count + destination_index",
-					"part_number":         "source_chunk_index * 3 + attempt_slot + 1",
-					"route_generation_id": "initial-{chunk_index}-{destination_id}",
-				},
-			},
-		}
-	case "transfer.route_stream.complete":
-		response = map[string]any{"success": true, "transfer_id": payload["transfer_id"], "total_routes": 2}
-	case "transfer.distribute":
-		response = map[string]any{"success": true, "transfer_id": payload["transfer_id"], "orchestrators_assigned": 1}
-	case "transfer.status":
-		response = map[string]any{
-			"transfer_id":   payload["transfer_id"],
-			"status":        "completed",
-			"error_message": nil,
-			"started_at":    "2026-06-22T22:40:20.000Z",
-			"completed_at":  "2026-06-22T22:41:20.000Z",
-		}
-	case "transfer.cancel":
-		response = map[string]any{"success": true, "message": "cancelled"}
-	}
-	if output == nil {
-		return nil
-	}
-	encoded, err := json.Marshal(response)
-	if err != nil {
-		return err
-	}
-	return json.Unmarshal(encoded, output)
-}
-
-func (fake *fakeTransferControl) splitRoutes(_ string, _ map[string]any, routes []SignedChunkRoute) ([][]SignedChunkRoute, error) {
-	return [][]SignedChunkRoute{routes}, nil
-}
-
-func (fake *fakeTransferControl) openTerminalSignalWaiter(_ context.Context, _ string) (*TransferTerminalSignalWaiter, error) {
-	return &TransferTerminalSignalWaiter{closed: make(chan struct{})}, nil
-}
-
-func (fake *fakeTransferControl) registerRecoveryLease(lease *recoveryLease) {
-	if fake.recoveryLeases == nil {
-		fake.recoveryLeases = make(map[string]*recoveryLease)
-	}
-	fake.recoveryLeases[lease.transferID] = lease
-}
-func (fake *fakeTransferControl) releaseRecoveryLease(transferID string) {
-	delete(fake.recoveryLeases, transferID)
-}
-func (fake *fakeTransferControl) continueRecoveryLease(transferID string) {
-	fake.continuedRecovery = append(fake.continuedRecovery, transferID)
-}
-
-func (fake *fakeTransferControl) close() {}
 
 func TestClientUsesNATSControlForLifecycle(t *testing.T) {
 	client := NewClient(WithNATSURL("nats://127.0.0.1:4222"), WithAPIKey("b1m_go"))
@@ -235,7 +118,7 @@ func TestClientChunksSignedURLAttachmentOverNATSControl(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	routes := make([]SignedChunkRoute, 5_120)
+	routes := make([]SignedChunkRoute, 5_121)
 	for index := range routes {
 		routes[index] = SignedChunkRoute{
 			SourceID: "src_0", DestinationID: "dst_0", ChunkIndex: index,
@@ -267,15 +150,18 @@ func TestClientChunksSignedURLAttachmentOverNATSControl(t *testing.T) {
 		"transfer.route_stream.batch",
 		"transfer.route_stream.batch",
 		"transfer.route_stream.batch",
+		"transfer.route_stream.batch",
+		"transfer.route_stream.batch",
+		"transfer.route_stream.batch",
 		"transfer.route_stream.complete",
 	}
 	if got := callTypes(fake.calls); !sameStrings(got, want) {
 		t.Fatalf("message types mismatch: got %v want %v", got, want)
 	}
-	if fake.calls[1].payload["total_routes"] != 5_120 {
+	if fake.calls[1].payload["total_routes"] != 5_121 {
 		t.Fatalf("unexpected begin payload: %+v", fake.calls[1].payload)
 	}
-	wantBatchSizes := []any{2_048, 2_048, 1_024}
+	wantBatchSizes := []any{1_024, 1_024, 1_024, 1_024, 1_024, 1}
 	for index, wantSize := range wantBatchSizes {
 		if fake.calls[2+index].payload["route_count"] != wantSize {
 			t.Fatalf("unexpected route batch %d size: got=%v want=%v", index, fake.calls[2+index].payload["route_count"], wantSize)
@@ -286,7 +172,7 @@ func TestClientChunksSignedURLAttachmentOverNATSControl(t *testing.T) {
 func TestRouteStreamInterruptionsRetainRecovery(t *testing.T) {
 	transferID := "11111111-1111-4111-8111-111111111111"
 	routes := []SignedChunkRoute{{
-		SourceID: "src_0", DestinationID: "dst_0", ChunkIndex: 0, DeliveryIndex: 0,
+		SourceID: "src_0", DestinationID: "dst_0", ChunkIndex: 0, DeliveryIndex: intPtr(0),
 		SourceURL: "https://source.example/file.bin", DestURL: "https://dest.example/file.bin.part0",
 		SourceOffset: 0, ChunkSize: 512,
 	}}
@@ -322,11 +208,11 @@ func TestRouteStreamInterruptionsRetainRecovery(t *testing.T) {
 
 func TestRuntimeStateLossRetainsRouteRecovery(t *testing.T) {
 	for _, status := range []int{404, 409} {
-		if !isRecoverableRouteStreamError(&lifecycleRequestError{status: status}) {
+		if !isRecoverableRouteStreamError(&LifecycleRequestError{Status: status}) {
 			t.Fatalf("runtime state-loss status %d did not retain recovery", status)
 		}
 	}
-	if isRecoverableRouteStreamError(&lifecycleRequestError{status: 400}) {
+	if isRecoverableRouteStreamError(&LifecycleRequestError{Status: 400}) {
 		t.Fatal("ordinary route validation failure incorrectly retained recovery")
 	}
 }
@@ -342,7 +228,7 @@ func TestCompactSignedRoutesReferencesMultipartGroupManifest(t *testing.T) {
 			},
 		},
 		{
-			SourceID: "src", DestinationID: "dst", ChunkIndex: 1, DeliveryIndex: 1,
+			SourceID: "src", DestinationID: "dst", ChunkIndex: 1, DeliveryIndex: intPtr(1),
 			SourceURL: "https://source.example/file", DestURL: "https://dest.example/part-2",
 			SourceOffset: 512, ChunkSize: 512, Metadata: map[string]any{
 				"multipart_group_id": "group", "upload_id": "upload", "final_object_key": "file.bin",
@@ -406,7 +292,7 @@ func TestRuntimeEpochRecoveryCoalescesAndClearsSecrets(t *testing.T) {
 		dispose:            func() { disposed++ },
 	}
 	control.recoveryLeases[transferID] = lease
-	control.recoveryRunning[transferID] = true
+	control.recoveryRunning[transferID] = &recoveryRun{lease: lease, ctx: context.Background(), cancel: func() {}}
 	control.runtimeEpochs[0] = [2]string{"runtime-a", "transport-a"}
 	control.observeRuntimeEpochs(0, map[string]any{
 		"runtime_epoch":   "runtime-b",
