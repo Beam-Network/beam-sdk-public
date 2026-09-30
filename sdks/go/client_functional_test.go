@@ -35,7 +35,6 @@ func TestClientUsesNATSControlForLifecycle(t *testing.T) {
 		Destinations: []DestConfig{{"type": "http", "url": "https://dest.example/file.bin"}},
 		TotalSize:    10_485_760,
 		ChunkSize:    5_242_880,
-		TestMode:     true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -78,7 +77,6 @@ func TestIdempotentPrepareReusesRouteGeneration(t *testing.T) {
 			[]PreparedHTTPSource{{SourceID: "src_0", Type: "http", URL: "https://source.example/file.bin", Size: 4096}},
 			[]PreparedDestination{{DestinationID: "dst_0", Provider: "http", Mode: "http_chunks", LogicalPrefix: "imports/file.bin"}},
 			"",
-			false,
 			"",
 			"",
 			"studio-step-retry",
@@ -111,7 +109,6 @@ func TestClientChunksSignedURLAttachmentOverNATSControl(t *testing.T) {
 		[]PreparedHTTPSource{{SourceID: "src_0", Type: "http", URL: "https://source.example/file.bin", Size: 4096}},
 		[]PreparedDestination{{DestinationID: "dst_0", Provider: "http", Mode: "http_chunks", LogicalPrefix: "imports/file.bin"}},
 		"",
-		false,
 		"",
 		"11111111-1111-4111-8111-111111111111",
 	)
@@ -310,4 +307,48 @@ func TestRuntimeEpochRecoveryCoalescesAndClearsSecrets(t *testing.T) {
 		t.Fatalf("retained provider secrets were disposed %d times", disposed)
 	}
 	control.close()
+}
+
+func TestWaitForTransferReturnsStorageAccessErrorVerbatim(t *testing.T) {
+	client := NewClient(WithNATSURL("nats://127.0.0.1:4222"), WithAPIKey("b1m_go"))
+	message := "destination_access_denied: The destination storage refused Beam's requests (403 AccessDenied). Check that the credentials allow writes to this bucket and path and are not restricted to specific IP addresses or networks."
+	fake := &fakeTransferControl{statusResponse: map[string]any{
+		"transfer_id":   "3f0c9a52-8a8f-4d44-9d7c-4b2f7f0c1a11",
+		"status":        "failed",
+		"error_message": message,
+	}}
+	client.control = fake
+
+	_, err := client.WaitForTransfer(context.Background(), "3f0c9a52-8a8f-4d44-9d7c-4b2f7f0c1a11", time.Second, time.Millisecond)
+	var storageErr *StorageAccessError
+	if !errors.As(err, &storageErr) {
+		t.Fatalf("expected *StorageAccessError, got %T %v", err, err)
+	}
+	if storageErr.Code != StorageAccessDestinationDenied || storageErr.ErrorMessage != message {
+		t.Fatalf("storage error = %+v", storageErr)
+	}
+	var failedErr *TransferFailedError
+	if !errors.As(err, &failedErr) || failedErr.ErrorMessage != message {
+		t.Fatalf("expected *TransferFailedError through errors.As, got %v", err)
+	}
+	if !strings.Contains(err.Error(), message) {
+		t.Fatalf("error text %q does not carry the server message", err.Error())
+	}
+}
+
+func TestNewTransferFailedErrorClassifiesOnlyTheCodePrefix(t *testing.T) {
+	var storageErr *StorageAccessError
+	if err := NewTransferFailedError("t-1", "source_access_denied: The source storage refused Beam's requests."); !errors.As(err, &storageErr) || storageErr.Code != StorageAccessSourceDenied {
+		t.Fatalf("source access error = %T %v", err, err)
+	}
+	for _, message := range []string{"upstream said source_access_denied: later", "destination_access_denied_extra: x", ""} {
+		err := NewTransferFailedError("t-2", message)
+		if errors.As(err, &storageErr) {
+			t.Fatalf("message %q classified as storage access", message)
+		}
+		var failedErr *TransferFailedError
+		if !errors.As(err, &failedErr) || failedErr.ErrorMessage != message {
+			t.Fatalf("message %q = %T %v", message, err, err)
+		}
+	}
 }
