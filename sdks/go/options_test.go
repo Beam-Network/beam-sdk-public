@@ -99,7 +99,7 @@ func TestMultipartControlIsBoundedIndependentlyFromRouteSigning(t *testing.T) {
 	for index := range destinations {
 		destinations[index] = r2Destination(storage.URL, "output.bin")
 	}
-	prepared, err := client.PrepareProviderTransfer(context.Background(), []ProviderSource{r2Source(storage.URL)}, destinations, "", false, 0, false, "")
+	prepared, err := client.PrepareProviderTransfer(context.Background(), []ProviderSource{r2Source(storage.URL)}, destinations, "", 0, false, "")
 	if err != nil || !prepared.Success {
 		t.Fatalf("prepare = %+v, %v", prepared, err)
 	}

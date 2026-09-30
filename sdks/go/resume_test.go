@@ -221,13 +221,12 @@ func TestPlanTransferValidatesCompactPlan(t *testing.T) {
 	planned, err := client.PlanTransfer(context.Background(), TransferPlanRequest{
 		Sources:      []PlanningHTTPSource{source},
 		Destinations: []PreparedDestination{{DestinationID: "dst_0", Provider: "http", Mode: "http_chunks", LogicalPrefix: "out/file.bin"}},
-		TestMode:     true,
 	})
 	if err != nil || !planned.Success || planned.PlanDescriptor.Version != "compact-transfer-plan/v1" {
 		t.Fatalf("plan = %+v, %v", planned, err)
 	}
 	call := fake.callsOf("transfer.plan")[0]
-	if call.transferID != "" || call.idempotencyKey != "" || call.payload["signed_url_flow"] != SignedURLFlowCanonical || call.payload["test_mode"] != true {
+	if call.transferID != "" || call.idempotencyKey != "" || call.payload["signed_url_flow"] != SignedURLFlowCanonical {
 		t.Fatalf("plan call = %+v", call)
 	}
 }

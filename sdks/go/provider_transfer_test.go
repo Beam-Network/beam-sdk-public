@@ -29,7 +29,7 @@ func TestNonRecoverableRouteFailurePreservesMultipartCleanupAuthority(t *testing
 	_, err := client.PrepareProviderTransfer(context.Background(),
 		[]ProviderSource{r2Source(storage.URL)},
 		[]ProviderDestination{r2Destination(storage.URL, "output.bin")},
-		"", false, 0, false, "")
+		"", 0, false, "")
 	var providerErr *ProviderTransferError
 	if !errors.As(err, &providerErr) {
 		t.Fatalf("expected ProviderTransferError, got %T %v", err, err)
@@ -63,7 +63,7 @@ func TestRouteReplayReusesCreatedMultipartUploads(t *testing.T) {
 	prepared, err := client.PrepareProviderTransfer(context.Background(),
 		[]ProviderSource{r2Source(storage.URL)},
 		[]ProviderDestination{r2Destination(storage.URL, "out/file.bin")},
-		"", false, 0, false, "")
+		"", 0, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +111,7 @@ func TestHuggingFaceRouteReplayReusesOriginalPlan(t *testing.T) {
 	prepared, err := client.PrepareProviderTransfer(context.Background(),
 		[]ProviderSource{HuggingFaceProviderSource{RepoID: "acme/corpus", Path: "data/train.parquet", RepoType: "dataset", Token: huggingFaceTestToken, Endpoint: hub.URL}},
 		[]ProviderDestination{HuggingFaceProviderDestination{RepoID: "acme/out", Path: "out/file.bin", Token: huggingFaceTestToken, Endpoint: hub.URL}},
-		"", false, 0, false, "")
+		"", 0, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}

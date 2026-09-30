@@ -23,7 +23,6 @@ type providerTransferInput struct {
 	sources           []ProviderSource
 	destinations      []ProviderDestination
 	name              string
-	testMode          bool
 	expiresIn         time.Duration
 	distribute        bool
 	chunkSize         int64
@@ -215,7 +214,6 @@ func (client *Client) executeProviderTransfer(ctx context.Context, input provide
 		Sources:      preparedSources,
 		Destinations: preparedDestinations,
 		Name:         input.name,
-		TestMode:     input.testMode,
 		ChunkSize:    input.chunkSize,
 	}
 	if huggingFaceChunkSize > 0 {

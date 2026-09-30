@@ -252,7 +252,7 @@ func TestProviderFailureCleanupSurvivesConcurrentLeaseRelease(t *testing.T) {
 	_, err := client.PrepareProviderTransfer(context.Background(),
 		[]ProviderSource{r2Source(storage.URL)},
 		[]ProviderDestination{r2Destination(storage.URL, "output.bin")},
-		"", false, 0, false, "")
+		"", 0, false, "")
 	var providerErr *ProviderTransferError
 	if !errors.As(err, &providerErr) || !providerErr.MultipartCleanupComplete {
 		t.Fatalf("expected completed cleanup, got %v", err)

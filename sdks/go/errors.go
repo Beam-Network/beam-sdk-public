@@ -14,6 +14,63 @@ import (
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 )
 
+// Storage access failure codes BeamCore reports at the start of a failed
+// transfer's error message when source or destination storage refused Beam's
+// requests.
+const (
+	StorageAccessSourceDenied      = "source_access_denied"
+	StorageAccessDestinationDenied = "destination_access_denied"
+)
+
+// TransferFailedError reports a transfer that BeamCore marked failed.
+// ErrorMessage is BeamCore's error_message for the transfer, verbatim (empty
+// when it sent none).
+type TransferFailedError struct {
+	TransferID   string
+	ErrorMessage string
+}
+
+func (err *TransferFailedError) Error() string {
+	message := err.ErrorMessage
+	if message == "" {
+		message = "unknown error"
+	}
+	return fmt.Sprintf("transfer %s failed: %s", err.TransferID, message)
+}
+
+// StorageAccessError reports that the source or destination storage refused
+// Beam's requests. Code is StorageAccessSourceDenied or
+// StorageAccessDestinationDenied, and ErrorMessage carries BeamCore's
+// explanation verbatim. errors.As also matches it as a *TransferFailedError.
+//
+// Check that the credentials allow the operation on this bucket and path and
+// are not restricted to specific IP addresses or networks (for example
+// Cloudflare R2 API-token client IP filtering, S3 bucket policies with
+// aws:SourceIp, or VPC-only endpoints). Beam moves data through many workers
+// on different networks, so restricted credentials make the transfer fail.
+type StorageAccessError struct {
+	TransferFailedError
+	Code string
+}
+
+func (err *StorageAccessError) Unwrap() error {
+	return &err.TransferFailedError
+}
+
+// NewTransferFailedError builds the error for a failed transfer from its
+// error_message: a *StorageAccessError when the message starts with a storage
+// access code (the text before the first ':'), otherwise a
+// *TransferFailedError.
+func NewTransferFailedError(transferID string, errorMessage string) error {
+	failed := TransferFailedError{TransferID: transferID, ErrorMessage: errorMessage}
+	code, _, _ := strings.Cut(errorMessage, ":")
+	code = strings.TrimSpace(code)
+	if code == StorageAccessSourceDenied || code == StorageAccessDestinationDenied {
+		return &StorageAccessError{TransferFailedError: failed, Code: code}
+	}
+	return &failed
+}
+
 // ProviderTransferError reports a non-recoverable provider transfer failure
 // after the SDK cancelled the transfer and aborted the multipart uploads it
 // created. Errors holds the original failure followed by any cancellation and

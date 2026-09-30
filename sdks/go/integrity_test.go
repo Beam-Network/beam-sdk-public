@@ -87,7 +87,7 @@ func TestS3SourceMetadataPinsIntegrityGrants(t *testing.T) {
 	prepared, err := client.PrepareProviderTransfer(context.Background(),
 		[]ProviderSource{r2Source(storage.URL)},
 		[]ProviderDestination{r2Destination(storage.URL, "out/file.bin")},
-		"", false, 0, false, "")
+		"", 0, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}

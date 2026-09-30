@@ -291,6 +291,12 @@ func CalculateOptimalChunkSize(totalSize int64) int64 {
 
 // CreateTransfer creates a raw (non-provider) transfer. It is the Go name for
 // the TypeScript createRawTransfer; see CreateRawTransfer.
+//
+// Source and destination credentials must not be restricted to specific IP
+// addresses or networks (for example Cloudflare R2 API-token client IP
+// filtering, S3 bucket policies with aws:SourceIp, or VPC-only endpoints). Beam
+// moves data through many workers on different networks, so restricted
+// credentials make the transfer fail.
 func (client *Client) CreateTransfer(ctx context.Context, input TransferCreateRequest) (*TransferCreateResponse, error) {
 	if input.ChunkSize == 0 {
 		input.ChunkSize = CalculateOptimalChunkSize(input.TotalSize)
@@ -387,7 +393,6 @@ type TransferPlanRequest struct {
 	Sources       []PlanningHTTPSource
 	Destinations  []PreparedDestination
 	Name          string
-	TestMode      bool
 	URLsExpiresAt string
 	// ChunkSize requests a plan chunk size; BeamCore may raise it.
 	ChunkSize int64
@@ -395,6 +400,12 @@ type TransferPlanRequest struct {
 
 // PlanTransfer asks BeamCore for the compact plan a transfer would use without
 // creating it. Sources need no signed URLs; see PrepareProviderSourceForPlan.
+//
+// Source and destination credentials must not be restricted to specific IP
+// addresses or networks (for example Cloudflare R2 API-token client IP
+// filtering, S3 bucket policies with aws:SourceIp, or VPC-only endpoints). Beam
+// moves data through many workers on different networks, so restricted
+// credentials make the transfer fail.
 func (client *Client) PlanTransfer(ctx context.Context, request TransferPlanRequest) (*TransferPlanResponse, error) {
 	body := map[string]any{
 		"sources":         request.Sources,
@@ -403,9 +414,6 @@ func (client *Client) PlanTransfer(ctx context.Context, request TransferPlanRequ
 	}
 	if request.Name != "" {
 		body["name"] = request.Name
-	}
-	if request.TestMode {
-		body["test_mode"] = true
 	}
 	if request.ChunkSize > 0 {
 		body["chunk_size"] = request.ChunkSize
@@ -425,12 +433,19 @@ func (client *Client) PlanTransfer(ctx context.Context, request TransferPlanRequ
 	return &result, nil
 }
 
+// PrepareTransfer prepares a transfer from already-prepared HTTP sources and
+// destinations; see PrepareTransferWithRequest.
+//
+// Source and destination credentials must not be restricted to specific IP
+// addresses or networks (for example Cloudflare R2 API-token client IP
+// filtering, S3 bucket policies with aws:SourceIp, or VPC-only endpoints). Beam
+// moves data through many workers on different networks, so restricted
+// credentials make the transfer fail.
 func (client *Client) PrepareTransfer(
 	ctx context.Context,
 	sources []PreparedHTTPSource,
 	destinations []PreparedDestination,
 	name string,
-	testMode bool,
 	urlsExpiresAt string,
 	routeGenerationID string,
 	idempotencyKey ...string,
@@ -443,7 +458,6 @@ func (client *Client) PrepareTransfer(
 		Sources:           sources,
 		Destinations:      destinations,
 		Name:              name,
-		TestMode:          testMode,
 		URLsExpiresAt:     urlsExpiresAt,
 		RouteGenerationID: routeGenerationID,
 		IdempotencyKey:    key,
@@ -452,6 +466,12 @@ func (client *Client) PrepareTransfer(
 
 // PrepareTransferWithRequest prepares a transfer from already-prepared HTTP
 // sources and destinations. It mirrors the TypeScript prepareTransfer input.
+//
+// Source and destination credentials must not be restricted to specific IP
+// addresses or networks (for example Cloudflare R2 API-token client IP
+// filtering, S3 bucket policies with aws:SourceIp, or VPC-only endpoints). Beam
+// moves data through many workers on different networks, so restricted
+// credentials make the transfer fail.
 func (client *Client) PrepareTransferWithRequest(ctx context.Context, request TransferPrepareRequest) (*TransferPrepareResponse, error) {
 	return client.prepareTransferWithRequestKey(ctx, request, "")
 }
@@ -480,9 +500,6 @@ func (client *Client) prepareTransferWithRequestKey(ctx context.Context, request
 	}
 	if request.Name != "" {
 		body["name"] = request.Name
-	}
-	if request.TestMode {
-		body["test_mode"] = true
 	}
 	if request.URLsExpiresAt != "" {
 		body["urls_expires_at"] = request.URLsExpiresAt
@@ -916,6 +933,13 @@ func firstPositive(values ...int) int {
 	return 0
 }
 
+// CreateAndDistribute creates a raw transfer and distributes it.
+//
+// Source and destination credentials must not be restricted to specific IP
+// addresses or networks (for example Cloudflare R2 API-token client IP
+// filtering, S3 bucket policies with aws:SourceIp, or VPC-only endpoints). Beam
+// moves data through many workers on different networks, so restricted
+// credentials make the transfer fail.
 func (client *Client) CreateAndDistribute(ctx context.Context, input TransferCreateRequest) (*TransferCreateResponse, error) {
 	result, err := client.CreateTransfer(ctx, input)
 	if err != nil {
@@ -942,7 +966,9 @@ type WaitForTransferOptions struct {
 }
 
 // WaitForTransfer waits for a terminal status. Zero timeout and poll interval use
-// the defaults of WaitForTransferOptions.
+// the defaults of WaitForTransferOptions. A failed transfer returns a
+// *TransferFailedError, or a *StorageAccessError when the source or destination
+// storage refused Beam's requests; both carry BeamCore's error_message verbatim.
 func (client *Client) WaitForTransfer(
 	ctx context.Context,
 	transferID string,
@@ -955,7 +981,9 @@ func (client *Client) WaitForTransfer(
 // WaitForTransferWithOptions subscribes to the transfer's terminal signal,
 // reconciles every signal through authoritative status, and falls back to
 // jittered, backed-off polling. On completion it commits any Hugging Face
-// destination uploads before returning.
+// destination uploads before returning. A failed transfer returns a
+// *TransferFailedError, or a *StorageAccessError when the source or destination
+// storage refused Beam's requests; both carry BeamCore's error_message verbatim.
 func (client *Client) WaitForTransferWithOptions(ctx context.Context, transferID string, options WaitForTransferOptions) (*TransferStatusInfo, error) {
 	if err := validateID(transferID, "transferID"); err != nil {
 		return nil, err
@@ -1005,7 +1033,7 @@ func (client *Client) WaitForTransferWithOptions(ctx context.Context, transferID
 			if status.ErrorMessage != nil {
 				message = *status.ErrorMessage
 			}
-			return nil, fmt.Errorf("transfer failed: %s", message)
+			return nil, NewTransferFailedError(transferID, message)
 		case "cancelled":
 			return nil, fmt.Errorf("transfer cancelled")
 		}
