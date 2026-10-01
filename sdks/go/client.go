@@ -268,12 +268,6 @@ func (client *Client) Close() {
 
 // CreateTransfer creates a raw (non-provider) transfer. It is the Go name for
 // the TypeScript createRawTransfer; see CreateRawTransfer.
-//
-// Source and destination credentials must not be restricted to specific IP
-// addresses or networks (for example Cloudflare R2 API-token client IP
-// filtering, S3 bucket policies with aws:SourceIp, or VPC-only endpoints). Beam
-// moves data through many workers on different networks, so restricted
-// credentials make the transfer fail.
 func (client *Client) CreateTransfer(ctx context.Context, input TransferCreateRequest) (*TransferCreateResponse, error) {
 	var result TransferCreateResponse
 	if input.TransferID == "" {
@@ -372,12 +366,6 @@ type TransferPlanRequest struct {
 
 // PlanTransfer asks BeamCore for the compact plan a transfer would use without
 // creating it. Sources need no signed URLs; see PrepareProviderSourceForPlan.
-//
-// Source and destination credentials must not be restricted to specific IP
-// addresses or networks (for example Cloudflare R2 API-token client IP
-// filtering, S3 bucket policies with aws:SourceIp, or VPC-only endpoints). Beam
-// moves data through many workers on different networks, so restricted
-// credentials make the transfer fail.
 func (client *Client) PlanTransfer(ctx context.Context, request TransferPlanRequest) (*TransferPlanResponse, error) {
 	body := map[string]any{
 		"sources":         request.Sources,
@@ -404,12 +392,6 @@ func (client *Client) PlanTransfer(ctx context.Context, request TransferPlanRequ
 
 // PrepareTransfer prepares a transfer from already-prepared HTTP sources and
 // destinations; see PrepareTransferWithRequest.
-//
-// Source and destination credentials must not be restricted to specific IP
-// addresses or networks (for example Cloudflare R2 API-token client IP
-// filtering, S3 bucket policies with aws:SourceIp, or VPC-only endpoints). Beam
-// moves data through many workers on different networks, so restricted
-// credentials make the transfer fail.
 func (client *Client) PrepareTransfer(
 	ctx context.Context,
 	sources []PreparedHTTPSource,
@@ -435,12 +417,6 @@ func (client *Client) PrepareTransfer(
 
 // PrepareTransferWithRequest prepares a transfer from already-prepared HTTP
 // sources and destinations. It mirrors the TypeScript prepareTransfer input.
-//
-// Source and destination credentials must not be restricted to specific IP
-// addresses or networks (for example Cloudflare R2 API-token client IP
-// filtering, S3 bucket policies with aws:SourceIp, or VPC-only endpoints). Beam
-// moves data through many workers on different networks, so restricted
-// credentials make the transfer fail.
 func (client *Client) PrepareTransferWithRequest(ctx context.Context, request TransferPrepareRequest) (*TransferPrepareResponse, error) {
 	return client.prepareTransferWithRequestKey(ctx, request, "")
 }
@@ -903,12 +879,6 @@ func firstPositive(values ...int) int {
 }
 
 // CreateAndDistribute creates a raw transfer and distributes it.
-//
-// Source and destination credentials must not be restricted to specific IP
-// addresses or networks (for example Cloudflare R2 API-token client IP
-// filtering, S3 bucket policies with aws:SourceIp, or VPC-only endpoints). Beam
-// moves data through many workers on different networks, so restricted
-// credentials make the transfer fail.
 func (client *Client) CreateAndDistribute(ctx context.Context, input TransferCreateRequest) (*TransferCreateResponse, error) {
 	result, err := client.CreateTransfer(ctx, input)
 	if err != nil {
@@ -935,9 +905,8 @@ type WaitForTransferOptions struct {
 }
 
 // WaitForTransfer waits for a terminal status. Zero timeout and poll interval use
-// the defaults of WaitForTransferOptions. A failed transfer returns a
-// *TransferFailedError, or a *StorageAccessError when the source or destination
-// storage refused Beam's requests; both carry BeamCore's error_message verbatim.
+// the defaults of WaitForTransferOptions. A failed transfer returns
+// *TransferFailedError, or *StorageAccessError when storage refused Beam's requests.
 func (client *Client) WaitForTransfer(
 	ctx context.Context,
 	transferID string,
@@ -950,9 +919,8 @@ func (client *Client) WaitForTransfer(
 // WaitForTransferWithOptions subscribes to the transfer's terminal signal,
 // reconciles every signal through authoritative status, and falls back to
 // jittered, backed-off polling. On completion it commits any Hugging Face
-// destination uploads before returning. A failed transfer returns a
-// *TransferFailedError, or a *StorageAccessError when the source or destination
-// storage refused Beam's requests; both carry BeamCore's error_message verbatim.
+// destination uploads before returning. A failed transfer returns
+// *TransferFailedError, or *StorageAccessError when storage refused Beam's requests.
 func (client *Client) WaitForTransferWithOptions(ctx context.Context, transferID string, options WaitForTransferOptions) (*TransferStatusInfo, error) {
 	if err := validateID(transferID, "transferID"); err != nil {
 		return nil, err

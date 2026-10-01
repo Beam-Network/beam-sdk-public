@@ -19,18 +19,12 @@ func Bool(value bool) *bool {
 
 // SourceConfig is a raw transfer source.
 //
-// Credentials must not be restricted to specific IP addresses or networks (for
-// example Cloudflare R2 API-token client IP filtering, S3 bucket policies with
-// aws:SourceIp, or VPC-only endpoints). Beam moves data through many workers
-// on different networks, so restricted credentials make the transfer fail.
+// Credentials must not be restricted to specific IP addresses or networks.
 type SourceConfig map[string]any
 
 // DestConfig is a raw transfer destination.
 //
-// Credentials must not be restricted to specific IP addresses or networks (for
-// example Cloudflare R2 API-token client IP filtering, S3 bucket policies with
-// aws:SourceIp, or VPC-only endpoints). Beam moves data through many workers
-// on different networks, so restricted credentials make the transfer fail.
+// Credentials must not be restricted to specific IP addresses or networks.
 type DestConfig map[string]any
 
 type CallbackConfig struct {
@@ -231,10 +225,6 @@ type TransferTerminalEvent struct {
 
 // PlanningHTTPSource is a source described for transfer.plan. Unlike
 // PreparedHTTPSource it needs no signed URL.
-//
-// Its URL and headers must work from any network: Beam moves data through many
-// workers on different networks, so IP- or network-restricted URLs make the
-// transfer fail.
 type PlanningHTTPSource struct {
 	SourceID  string            `json:"source_id"`
 	Type      string            `json:"type"`
@@ -249,11 +239,6 @@ type PlanningHTTPSource struct {
 
 // PreparedHTTPSource is a signed HTTP source for transfer.prepare. Its URL and
 // headers must work from any network.
-//
-// Credentials must not be restricted to specific IP addresses or networks (for
-// example Cloudflare R2 API-token client IP filtering, S3 bucket policies with
-// aws:SourceIp, or VPC-only endpoints). Beam moves data through many workers
-// on different networks, so restricted credentials make the transfer fail.
 type PreparedHTTPSource struct {
 	SourceID  string            `json:"source_id"`
 	Type      string            `json:"type"`
@@ -481,10 +466,7 @@ type AttachSignedURLsResponse struct {
 
 // S3ProviderSource is an SDK-only Amazon S3 source configuration.
 //
-// Credentials must not be restricted to specific IP addresses or networks (for
-// example Cloudflare R2 API-token client IP filtering, S3 bucket policies with
-// aws:SourceIp, or VPC-only endpoints). Beam moves data through many workers
-// on different networks, so restricted credentials make the transfer fail.
+// Credentials must not be restricted to specific IP addresses or networks.
 type S3ProviderSource struct {
 	StorageLocation string `json:"storage_location,omitempty"`
 	Provider        string `json:"provider"`
@@ -503,10 +485,7 @@ type S3ProviderSource struct {
 
 // R2ProviderSource is an SDK-only Cloudflare R2 source configuration.
 //
-// Credentials must not be restricted to specific IP addresses or networks (for
-// example Cloudflare R2 API-token client IP filtering, S3 bucket policies with
-// aws:SourceIp, or VPC-only endpoints). Beam moves data through many workers
-// on different networks, so restricted credentials make the transfer fail.
+// Credentials must not be restricted to specific IP addresses or networks.
 type R2ProviderSource struct {
 	StorageLocation string `json:"storage_location,omitempty"`
 	Provider        string `json:"provider"`
@@ -527,10 +506,7 @@ type R2ProviderSource struct {
 // provider requires EndpointURL and uses path-style addressing unless
 // ForcePathStyle is set to false.
 //
-// Credentials must not be restricted to specific IP addresses or networks (for
-// example Cloudflare R2 API-token client IP filtering, S3 bucket policies with
-// aws:SourceIp, or VPC-only endpoints). Beam moves data through many workers
-// on different networks, so restricted credentials make the transfer fail.
+// Credentials must not be restricted to specific IP addresses or networks.
 type S3CompatibleProviderSource struct {
 	StorageLocation string `json:"storage_location,omitempty"`
 	Provider        string `json:"provider"`
@@ -549,10 +525,7 @@ type S3CompatibleProviderSource struct {
 
 // S3CompatibleProviderDestination is the destination form of S3CompatibleProviderSource.
 //
-// Credentials must not be restricted to specific IP addresses or networks (for
-// example Cloudflare R2 API-token client IP filtering, S3 bucket policies with
-// aws:SourceIp, or VPC-only endpoints). Beam moves data through many workers
-// on different networks, so restricted credentials make the transfer fail.
+// Credentials must not be restricted to specific IP addresses or networks.
 type S3CompatibleProviderDestination struct {
 	StorageLocation string `json:"storage_location,omitempty"`
 	Provider        string `json:"provider"`
@@ -571,10 +544,7 @@ type S3CompatibleProviderDestination struct {
 
 // HippiusProviderSource is an SDK-only Hippius source configuration.
 //
-// Credentials must not be restricted to specific IP addresses or networks (for
-// example Cloudflare R2 API-token client IP filtering, S3 bucket policies with
-// aws:SourceIp, or VPC-only endpoints). Beam moves data through many workers
-// on different networks, so restricted credentials make the transfer fail.
+// Credentials must not be restricted to specific IP addresses or networks.
 type HippiusProviderSource struct {
 	StorageLocation string `json:"storage_location,omitempty"`
 	Provider        string `json:"provider"`
@@ -590,10 +560,7 @@ type HippiusProviderSource struct {
 // The token stays local: the SDK resolves the file to the Hub's presigned CDN URL and sends
 // only that URL to BeamCore.
 //
-// Credentials must not be restricted to specific IP addresses or networks (for
-// example Cloudflare R2 API-token client IP filtering, S3 bucket policies with
-// aws:SourceIp, or VPC-only endpoints). Beam moves data through many workers
-// on different networks, so restricted credentials make the transfer fail.
+// Credentials must not be restricted to specific IP addresses or networks.
 type HuggingFaceProviderSource struct {
 	StorageLocation string `json:"storage_location,omitempty"`
 	Provider        string `json:"provider"`
@@ -608,10 +575,7 @@ type HuggingFaceProviderSource struct {
 
 // GCSProviderSource is an SDK-only GCS source configuration.
 //
-// Credentials must not be restricted to specific IP addresses or networks (for
-// example Cloudflare R2 API-token client IP filtering, S3 bucket policies with
-// aws:SourceIp, or VPC-only endpoints). Beam moves data through many workers
-// on different networks, so restricted credentials make the transfer fail.
+// Credentials must not be restricted to specific IP addresses or networks.
 type GCSProviderSource struct {
 	StorageLocation string `json:"storage_location,omitempty"`
 	Provider        string `json:"provider"`
@@ -623,10 +587,7 @@ type GCSProviderSource struct {
 
 // AzureProviderSource is an SDK-only Azure Blob source configuration.
 //
-// Credentials must not be restricted to specific IP addresses or networks (for
-// example Cloudflare R2 API-token client IP filtering, S3 bucket policies with
-// aws:SourceIp, or VPC-only endpoints). Beam moves data through many workers
-// on different networks, so restricted credentials make the transfer fail.
+// Credentials must not be restricted to specific IP addresses or networks.
 type AzureProviderSource struct {
 	StorageLocation string `json:"storage_location,omitempty"`
 	Provider        string `json:"provider"`
@@ -640,10 +601,7 @@ type AzureProviderSource struct {
 
 // S3ProviderDestination is an SDK-only Amazon S3 destination configuration.
 //
-// Credentials must not be restricted to specific IP addresses or networks (for
-// example Cloudflare R2 API-token client IP filtering, S3 bucket policies with
-// aws:SourceIp, or VPC-only endpoints). Beam moves data through many workers
-// on different networks, so restricted credentials make the transfer fail.
+// Credentials must not be restricted to specific IP addresses or networks.
 type S3ProviderDestination struct {
 	StorageLocation string `json:"storage_location,omitempty"`
 	Provider        string `json:"provider"`
@@ -662,10 +620,7 @@ type S3ProviderDestination struct {
 
 // R2ProviderDestination is an SDK-only Cloudflare R2 destination configuration.
 //
-// Credentials must not be restricted to specific IP addresses or networks (for
-// example Cloudflare R2 API-token client IP filtering, S3 bucket policies with
-// aws:SourceIp, or VPC-only endpoints). Beam moves data through many workers
-// on different networks, so restricted credentials make the transfer fail.
+// Credentials must not be restricted to specific IP addresses or networks.
 type R2ProviderDestination struct {
 	StorageLocation string `json:"storage_location,omitempty"`
 	Provider        string `json:"provider"`
@@ -680,10 +635,7 @@ type R2ProviderDestination struct {
 
 // HippiusProviderDestination is an SDK-only Hippius destination configuration.
 //
-// Credentials must not be restricted to specific IP addresses or networks (for
-// example Cloudflare R2 API-token client IP filtering, S3 bucket policies with
-// aws:SourceIp, or VPC-only endpoints). Beam moves data through many workers
-// on different networks, so restricted credentials make the transfer fail.
+// Credentials must not be restricted to specific IP addresses or networks.
 type HippiusProviderDestination struct {
 	StorageLocation string `json:"storage_location,omitempty"`
 	Provider        string `json:"provider"`
@@ -696,10 +648,7 @@ type HippiusProviderDestination struct {
 
 // HuggingFaceProviderDestination is an SDK-only Hugging Face Hub destination configuration.
 //
-// Credentials must not be restricted to specific IP addresses or networks (for
-// example Cloudflare R2 API-token client IP filtering, S3 bucket policies with
-// aws:SourceIp, or VPC-only endpoints). Beam moves data through many workers
-// on different networks, so restricted credentials make the transfer fail.
+// Credentials must not be restricted to specific IP addresses or networks.
 type HuggingFaceProviderDestination struct {
 	StorageLocation   string `json:"storage_location,omitempty"`
 	Provider          string `json:"provider"`
@@ -720,10 +669,7 @@ type HuggingFaceProviderDestination struct {
 
 // GCSProviderDestination is an SDK-only GCS destination configuration.
 //
-// Credentials must not be restricted to specific IP addresses or networks (for
-// example Cloudflare R2 API-token client IP filtering, S3 bucket policies with
-// aws:SourceIp, or VPC-only endpoints). Beam moves data through many workers
-// on different networks, so restricted credentials make the transfer fail.
+// Credentials must not be restricted to specific IP addresses or networks.
 type GCSProviderDestination struct {
 	StorageLocation string `json:"storage_location,omitempty"`
 	Provider        string `json:"provider"`
@@ -735,10 +681,7 @@ type GCSProviderDestination struct {
 
 // AzureProviderDestination is an SDK-only Azure Blob destination configuration.
 //
-// Credentials must not be restricted to specific IP addresses or networks (for
-// example Cloudflare R2 API-token client IP filtering, S3 bucket policies with
-// aws:SourceIp, or VPC-only endpoints). Beam moves data through many workers
-// on different networks, so restricted credentials make the transfer fail.
+// Credentials must not be restricted to specific IP addresses or networks.
 type AzureProviderDestination struct {
 	StorageLocation string `json:"storage_location,omitempty"`
 	Provider        string `json:"provider"`

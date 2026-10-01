@@ -19,12 +19,6 @@ type ProviderDestination interface{}
 
 // PrepareProviderTransfer signs provider sources and destinations, prepares the
 // transfer, and streams its signed routes.
-//
-// Source and destination credentials must not be restricted to specific IP
-// addresses or networks (for example Cloudflare R2 API-token client IP
-// filtering, S3 bucket policies with aws:SourceIp, or VPC-only endpoints). Beam
-// moves data through many workers on different networks, so restricted
-// credentials make the transfer fail.
 func (client *Client) PrepareProviderTransfer(
 	ctx context.Context,
 	sources []ProviderSource,

@@ -68,22 +68,11 @@ The provider-aware API covers S3, R2, S3-compatible, Hippius, and Hugging Face c
 
 ## Storage Credentials
 
-Source and destination credentials must not be restricted to specific IP addresses or networks (for example Cloudflare R2 API-token client IP filtering, S3 bucket policies with `aws:SourceIp`, or VPC-only endpoints). Beam moves data through many workers on different networks, so restricted credentials make the transfer fail.
+Source and destination credentials must not be restricted to specific IP addresses or networks.
 
 ## Failed Transfers
 
-`WaitForTransfer` returns `*TransferFailedError` for a failed transfer; its `ErrorMessage` is BeamCore's `error_message` verbatim. When the source or destination storage refused Beam's requests it returns `*StorageAccessError`, whose `Code` is `StorageAccessSourceDenied` (`source_access_denied`) or `StorageAccessDestinationDenied` (`destination_access_denied`). `errors.As` matches a `*StorageAccessError` as a `*TransferFailedError` too:
-
-```go
-status, err := client.WaitForTransfer(ctx, transfer.TransferID, 0, 0)
-var storageErr *beam.StorageAccessError
-if errors.As(err, &storageErr) {
-	// For example: "destination_access_denied: The destination storage refused Beam's requests (403 AccessDenied). ..."
-	log.Fatal(storageErr.Code, ": ", storageErr.ErrorMessage)
-}
-```
-
-`NewTransferFailedError(transferID, errorMessage)` gives the same classification for a status you polled yourself.
+`WaitForTransfer` returns `*TransferFailedError` for a failed transfer, with BeamCore's `error_message` in `ErrorMessage`. When storage refused Beam's requests it returns `*StorageAccessError` (`Code` is `source_access_denied` or `destination_access_denied`), which `errors.As` also matches as `*TransferFailedError`. `NewTransferFailedError(transferID, errorMessage)` classifies a status you polled yourself.
 
 ## Client Configuration
 
@@ -223,7 +212,7 @@ The multipart limits are exported as `MultipartMaxPartNumber` (10,000), `Multipa
 
 ## Breaking And Behavior Changes
 
-- **Breaking:** chunk size is chosen by Beam; the option was removed. `TransferCreateRequest`, `TransferPlanRequest`, `TransferPrepareRequest`, and `ProviderTransferOptions` no longer have a `ChunkSize` field, `CalculateOptimalChunkSize` is removed, and `CreateTransfer` no longer sends a default chunk size. For a Hugging Face multipart destination, the provider flow sends the Hub's part size to `transfer.prepare` as `provider_part_size`.
+- **Breaking:** Beam chooses the chunk size. The `ChunkSize` fields and `CalculateOptimalChunkSize` are removed.
 - **Breaking:** the SDK speaks `transfer-client-control/v7`. Multipart destinations use consecutive part numbers (`MultipartAttemptSlotCount` is 1, `MultipartMaxSourceChunks` is 10,000, and `MultipartPartNumber` rejects any slot other than 0); a retried chunk reuses its part, and Runtime-directed staged recovery copies a new attempt into the original upload with UploadPartCopy.
 - **Breaking:** `SignedChunkRoute.DeliveryIndex` changed from `int` to `*int` so delivery index 0 is distinguishable from unset. Code that sets or reads it must take or dereference a pointer.
 - Options now record invalid values instead of dropping them silently. `NewClient` still ignores the recorded errors and keeps defaults; the new `New` constructor returns them (joined) and fails.
