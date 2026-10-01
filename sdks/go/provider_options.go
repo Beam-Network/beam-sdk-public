@@ -26,9 +26,6 @@ type ProviderTransferOptions struct {
 	// Distribute defaults to true; set it to Bool(false) to prepare and stream
 	// signed routes without distributing the transfer.
 	Distribute *bool
-	// ChunkSize requests a plan chunk size. BeamCore may raise it; the response
-	// carries the effective value. A Hugging Face destination dictates its own.
-	ChunkSize int64
 	// IdempotencyKey is a stable caller identity used to derive the transfer id
 	// and lifecycle request ids.
 	IdempotencyKey string
@@ -67,7 +64,6 @@ func (options ProviderTransferOptions) input() providerTransferInput {
 		name:                    options.Name,
 		expiresIn:               options.ExpiresIn,
 		distribute:              options.Distribute == nil || *options.Distribute,
-		chunkSize:               options.ChunkSize,
 		idempotencyKey:          options.IdempotencyKey,
 		routeGenerationID:       options.RouteGenerationID,
 		ownership:               options.Ownership,

@@ -690,7 +690,8 @@ type huggingFaceUploadState struct {
 // planHuggingFaceUploads negotiates every Hugging Face destination before the plan exists.
 //
 // The Hub will not issue upload URLs without the object sha256, and it chooses the part size
-// itself, so this runs first and the plan is then requested at that size.
+// itself, so this runs first and transfer.prepare then carries that size as provider_part_size.
+// The returned part size is zero when every upload is single-part.
 func (client *Client) planHuggingFaceUploads(
 	ctx context.Context,
 	sources []ProviderSource,
@@ -724,7 +725,7 @@ func (client *Client) planHuggingFaceUploads(
 	}
 
 	states := make([]*huggingFaceUploadState, 0, len(targets))
-	var chunkSize int64
+	var partSize int64
 
 	for _, index := range targets {
 		destination := destinations[index].(HuggingFaceProviderDestination)
@@ -784,13 +785,13 @@ func (client *Client) planHuggingFaceUploads(
 			return nil, 0, err
 		}
 		if plan.ChunkSize > 0 {
-			if chunkSize > 0 && chunkSize != plan.ChunkSize {
+			if partSize > 0 && partSize != plan.ChunkSize {
 				return nil, 0, fmt.Errorf(
 					"huggingface destinations disagree on part size (%d vs %d); the plan carries a "+
-						"single chunk size", chunkSize, plan.ChunkSize,
+						"single chunk size", partSize, plan.ChunkSize,
 				)
 			}
-			chunkSize = plan.ChunkSize
+			partSize = plan.ChunkSize
 		}
 
 		state := &huggingFaceUploadState{
@@ -818,7 +819,7 @@ func (client *Client) planHuggingFaceUploads(
 		states = append(states, state)
 	}
 
-	return states, chunkSize, nil
+	return states, partSize, nil
 }
 
 // assertHuggingFacePlan fails before any byte moves if BeamCore did not adopt the Hub's part layout.

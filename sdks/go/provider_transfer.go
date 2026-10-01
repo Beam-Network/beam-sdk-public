@@ -25,7 +25,6 @@ type providerTransferInput struct {
 	name              string
 	expiresIn         time.Duration
 	distribute        bool
-	chunkSize         int64
 	idempotencyKey    string
 	routeGenerationID string
 
@@ -194,7 +193,7 @@ func (client *Client) executeProviderTransfer(ctx context.Context, input provide
 	if err := throwIfCancelled(""); err != nil {
 		return nil, err
 	}
-	huggingFaceStates, huggingFaceChunkSize, err := client.planHuggingFaceUploads(ctx, sources, preparedSources, destinations, preparedDestinations)
+	huggingFaceStates, providerPartSize, err := client.planHuggingFaceUploads(ctx, sources, preparedSources, destinations, preparedDestinations)
 	if err != nil {
 		return nil, err
 	}
@@ -211,13 +210,10 @@ func (client *Client) executeProviderTransfer(ctx context.Context, input provide
 	}
 
 	request := TransferPrepareRequest{
-		Sources:      preparedSources,
-		Destinations: preparedDestinations,
-		Name:         input.name,
-		ChunkSize:    input.chunkSize,
-	}
-	if huggingFaceChunkSize > 0 {
-		request.ChunkSize = huggingFaceChunkSize
+		Sources:          preparedSources,
+		Destinations:     preparedDestinations,
+		Name:             input.name,
+		providerPartSize: providerPartSize,
 	}
 	var prepared *TransferPrepareResponse
 	if resume != nil {

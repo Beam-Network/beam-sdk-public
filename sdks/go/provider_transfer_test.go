@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -133,4 +135,82 @@ func TestHuggingFaceRouteReplayReusesOriginalPlan(t *testing.T) {
 			t.Fatalf("direct-PUT route leaked metadata key %q", key)
 		}
 	}
+}
+
+// Beam chooses the chunk size: no provider prepare carries chunk_size, and only
+// a Hugging Face multipart destination carries the part size its Hub dictated.
+func TestProviderPrepareCarriesOnlyTheHubPartSize(t *testing.T) {
+	preparePayload := func(t *testing.T, fake *fakeTransferControl) map[string]any {
+		t.Helper()
+		calls := fake.callsOf("transfer.prepare")
+		if len(calls) != 1 {
+			t.Fatalf("prepare calls = %d", len(calls))
+		}
+		if _, sent := calls[0].payload["chunk_size"]; sent {
+			t.Fatalf("prepare payload must leave chunk size to Beam: %+v", calls[0].payload)
+		}
+		return calls[0].payload
+	}
+	prepareHuggingFace := func(t *testing.T, hubPartSize int64, partCount int) (*fakeTransferControl, *TransferPrepareResponse, *huggingFaceHub) {
+		t.Helper()
+		cdn := httptest.NewServer(cdnHandler([]byte(strings.Repeat("h", 4096))))
+		t.Cleanup(cdn.Close)
+		hub := newHuggingFaceHub(t, huggingFaceHubOptions{cdnOrigin: cdn.URL, size: 4096, sha256: strings.Repeat("a", 64), chunkSize: hubPartSize, partCount: partCount})
+		t.Cleanup(hub.Close)
+		fake := &fakeTransferControl{}
+		client := newTestClient(t, fake)
+		prepared, err := client.PrepareProviderTransfer(context.Background(),
+			[]ProviderSource{HuggingFaceProviderSource{RepoID: "acme/corpus", Path: "data/train.parquet", RepoType: "dataset", Token: huggingFaceTestToken, Endpoint: hub.URL}},
+			[]ProviderDestination{HuggingFaceProviderDestination{RepoID: "acme/out", Path: "out/file.bin", Token: huggingFaceTestToken, Endpoint: hub.URL}},
+			"", 0, false, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fake, prepared, hub
+	}
+
+	t.Run("s3 compatible", func(t *testing.T) {
+		storage := newFakeS3(t)
+		fake := &fakeTransferControl{}
+		client := newTestClient(t, fake)
+		if _, err := client.PrepareProviderTransfer(context.Background(),
+			[]ProviderSource{r2Source(storage.URL)},
+			[]ProviderDestination{r2Destination(storage.URL, "out/file.bin")},
+			"", 0, false, ""); err != nil {
+			t.Fatal(err)
+		}
+		if _, sent := preparePayload(t, fake)["provider_part_size"]; sent {
+			t.Fatal("a prepare without a Hugging Face destination must not carry provider_part_size")
+		}
+	})
+
+	t.Run("hugging face multipart", func(t *testing.T) {
+		fake, prepared, hub := prepareHuggingFace(t, 2048, 2)
+		if got := preparePayload(t, fake)["provider_part_size"]; got != int64(2048) {
+			t.Fatalf("provider_part_size = %#v, want the Hub part size 2048", got)
+		}
+		if prepared.PlanDescriptor.ChunkSize != 2048 {
+			t.Fatalf("plan chunk size = %d, want the Hub part size", prepared.PlanDescriptor.ChunkSize)
+		}
+		destURLs := make([]string, 0)
+		for _, batch := range fake.callsOf("transfer.route_stream.batch") {
+			for _, route := range batch.payload["route_batch"].(map[string]any)["routes"].([]map[string]any) {
+				destURLs = append(destURLs, route["dest_url"].(string))
+			}
+		}
+		sort.Strings(destURLs)
+		if want := []string{hub.URL + "/part/1", hub.URL + "/part/2"}; !reflect.DeepEqual(destURLs, want) {
+			t.Fatalf("routes target %v, want the Hub part URLs %v", destURLs, want)
+		}
+	})
+
+	t.Run("hugging face single part", func(t *testing.T) {
+		fake, prepared, _ := prepareHuggingFace(t, 0, 0)
+		if _, sent := preparePayload(t, fake)["provider_part_size"]; sent {
+			t.Fatal("a single-part Hugging Face upload must not carry provider_part_size")
+		}
+		if prepared.PlanDescriptor.Sources[0].ChunkCount != 1 {
+			t.Fatalf("single-part plan chunk count = %d", prepared.PlanDescriptor.Sources[0].ChunkCount)
+		}
+	})
 }

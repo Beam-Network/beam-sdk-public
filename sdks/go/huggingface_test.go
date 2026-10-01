@@ -379,7 +379,11 @@ func newHuggingFaceHub(t *testing.T, options huggingFaceHubOptions) *huggingFace
 				}}})
 				return
 			}
-			header := map[string]string{"chunk_size": strconv.FormatInt(options.chunkSize, 10)}
+			// A zero chunkSize answers like the Hub's single-part upload: no chunk_size, no parts.
+			header := map[string]string{}
+			if options.chunkSize > 0 {
+				header["chunk_size"] = strconv.FormatInt(options.chunkSize, 10)
+			}
 			// Emit the parts out of order so the numeric sort is actually exercised.
 			for part := options.partCount; part >= 1; part-- {
 				header[fmt.Sprintf("%05d", part)] = fmt.Sprintf("%s/part/%d", hub.URL, part)

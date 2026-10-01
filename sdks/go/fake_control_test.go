@@ -11,6 +11,7 @@ import (
 // fakeTransferControl records lifecycle requests and answers them like
 // BeamCore. Provider prepares derive a one-chunk-per-source plan from the
 // request: a single destination plans out/file.bin, several plan output-N.bin.
+// When provider_part_size is sent, the source is chunked at that size instead.
 type fakeTransferControl struct {
 	mu                          sync.Mutex
 	calls                       []fakeTransferCall
@@ -159,8 +160,13 @@ func fakePlanDescriptor(payload map[string]any) (map[string]any, error) {
 	if value, ok := source["size"].(float64); ok && value > 0 {
 		size = int64(value)
 	}
+	chunkSize := size
+	if partSize, ok := payload["provider_part_size"].(int64); ok && partSize > 0 {
+		chunkSize = partSize
+	}
+	chunkCount := int((size + chunkSize - 1) / chunkSize)
 	source["global_chunk_start"] = 0
-	source["chunk_count"] = 1
+	source["chunk_count"] = chunkCount
 	for index, destination := range destinations {
 		finalKey := "out/file.bin"
 		if len(destinations) > 1 {
@@ -170,10 +176,10 @@ func fakePlanDescriptor(payload map[string]any) (map[string]any, error) {
 		destination["final_object_keys"] = map[string]string{source["source_id"].(string): finalKey}
 	}
 	return map[string]any{
-		"version": "compact-transfer-plan/v1", "plan_nonce": "testplan", "chunk_size": size,
+		"version": "compact-transfer-plan/v1", "plan_nonce": "testplan", "chunk_size": chunkSize,
 		"multipart_attempt_slots": 1,
 		"sources":                 []any{source}, "destinations": destinations,
-		"logical_chunk_count": 1, "delivery_route_count": len(destinations),
+		"logical_chunk_count": chunkCount, "delivery_route_count": chunkCount * len(destinations),
 		"formulas": map[string]string{
 			"source_offset":       "source_chunk_index * chunk_size",
 			"delivery_index":      "chunk_index * destination_count + destination_index",

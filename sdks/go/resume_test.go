@@ -229,4 +229,7 @@ func TestPlanTransferValidatesCompactPlan(t *testing.T) {
 	if call.transferID != "" || call.idempotencyKey != "" || call.payload["signed_url_flow"] != SignedURLFlowCanonical {
 		t.Fatalf("plan call = %+v", call)
 	}
+	if _, sent := call.payload["chunk_size"]; sent {
+		t.Fatalf("plan payload must leave chunk size to Beam: %+v", call.payload)
+	}
 }

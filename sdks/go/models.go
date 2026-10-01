@@ -43,7 +43,6 @@ type TransferCreateRequest struct {
 	Sources         []SourceConfig   `json:"sources"`
 	Destinations    []DestConfig     `json:"destinations"`
 	TotalSize       int64            `json:"total_size"`
-	ChunkSize       int64            `json:"chunk_size,omitempty"`
 	Name            string           `json:"name,omitempty"`
 	MerkleRoot      string           `json:"merkle_root,omitempty"`
 	ChunkHashes     []string         `json:"chunk_hashes,omitempty"`
@@ -442,9 +441,10 @@ type TransferPrepareRequest struct {
 	IdempotencyKey string
 	// RouteGenerationID is internal recovery state; callers normally leave it empty.
 	RouteGenerationID string
-	// ChunkSize requests a plan chunk size. BeamCore may raise it; the response
-	// carries the effective value.
-	ChunkSize int64
+
+	// providerPartSize is the part size a Hugging Face destination's Hub
+	// dictated; only the provider flow sets it.
+	providerPartSize int64
 }
 
 // ProviderMultipartGroupIdentity is the durable identity of one multipart
