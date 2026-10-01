@@ -68,11 +68,7 @@ The provider-aware API covers S3, R2, S3-compatible, Hippius, and Hugging Face c
 
 ## Storage Credentials
 
-Source and destination credentials must not be restricted to specific IP addresses or networks.
-
-## Failed Transfers
-
-`WaitForTransfer` returns `*TransferFailedError` for a failed transfer, with BeamCore's `error_message` in `ErrorMessage`. When storage refused Beam's requests it returns `*StorageAccessError` (`Code` is `source_access_denied` or `destination_access_denied`), which `errors.As` also matches as `*TransferFailedError`. `NewTransferFailedError(transferID, errorMessage)` classifies a status you polled yourself.
+Source and destination credentials must not be restricted to specific IP addresses or networks. When storage refuses access, `WaitForTransfer` returns `*StorageAccessError` (`Code` is `source_access_denied` or `destination_access_denied`).
 
 ## Client Configuration
 
@@ -218,7 +214,7 @@ The multipart limits are exported as `MultipartMaxPartNumber` (10,000), `Multipa
 - Options now record invalid values instead of dropping them silently. `NewClient` still ignores the recorded errors and keeps defaults; the new `New` constructor returns them (joined) and fails.
 - `Close` also stops every route recovery and integrity audit signer, and releases the retained provider credentials.
 - A non-recoverable `PrepareProviderTransfer` failure now cancels the transfer, aborts the multipart uploads it created, and returns `*ProviderTransferError`. Its message no longer contains provider or lifecycle error text (which can carry signed URLs); use `errors.As`/`errors.Is` on the error, whose `Unwrap() []error` exposes the original failure.
-- A failed transfer makes `WaitForTransfer` return `*TransferFailedError` (or `*StorageAccessError`) instead of an untyped error; the text is now `transfer <id> failed: <error_message>`.
+- A failed transfer makes `WaitForTransfer` return `*TransferFailedError` instead of an untyped error.
 - A rejected first NATS connect (for example `nats: authorization violation` for an invalid API key) fails immediately instead of retrying; reconnects after a successful connect stay unbounded.
 
 ## Differences From The TypeScript SDK
