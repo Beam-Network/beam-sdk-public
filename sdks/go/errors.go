@@ -42,12 +42,6 @@ func (err *TransferFailedError) Error() string {
 // Beam's requests. Code is StorageAccessSourceDenied or
 // StorageAccessDestinationDenied, and ErrorMessage carries BeamCore's
 // explanation verbatim. errors.As also matches it as a *TransferFailedError.
-//
-// Check that the credentials allow the operation on this bucket and path and
-// are not restricted to specific IP addresses or networks (for example
-// Cloudflare R2 API-token client IP filtering, S3 bucket policies with
-// aws:SourceIp, or VPC-only endpoints). Beam moves data through many workers
-// on different networks, so restricted credentials make the transfer fail.
 type StorageAccessError struct {
 	TransferFailedError
 	Code string

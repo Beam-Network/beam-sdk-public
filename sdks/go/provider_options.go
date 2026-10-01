@@ -12,12 +12,7 @@ import (
 // the transfer's route-stream lock, so they must not call back into this
 // transfer's streaming.
 type ProviderTransferOptions struct {
-	// Sources and Destinations are the storage to read from and write to. Their
-	// credentials must not be restricted to specific IP addresses or networks
-	// (for example Cloudflare R2 API-token client IP filtering, S3 bucket
-	// policies with aws:SourceIp, or VPC-only endpoints). Beam moves data
-	// through many workers on different networks, so restricted credentials
-	// make the transfer fail.
+	// Sources and Destinations are the storage to read from and write to.
 	Sources      []ProviderSource
 	Destinations []ProviderDestination
 	Name         string
@@ -77,12 +72,6 @@ func (options ProviderTransferOptions) input() providerTransferInput {
 // PrepareProviderTransferWithOptions signs provider sources and destinations,
 // prepares the transfer, and streams its signed routes. It is the options
 // form of PrepareProviderTransfer and the TypeScript prepareProviderTransfer.
-//
-// Source and destination credentials must not be restricted to specific IP
-// addresses or networks (for example Cloudflare R2 API-token client IP
-// filtering, S3 bucket policies with aws:SourceIp, or VPC-only endpoints). Beam
-// moves data through many workers on different networks, so restricted
-// credentials make the transfer fail.
 func (client *Client) PrepareProviderTransferWithOptions(ctx context.Context, options ProviderTransferOptions) (*TransferPrepareResponse, error) {
 	return client.executeProviderTransfer(ctx, options.input(), nil)
 }
@@ -104,12 +93,6 @@ type ProviderTransferResumeOptions struct {
 // against the plan, and streams routes that reuse those upload ids. It then
 // serves route recovery signing from the current provider configs. OnPrepared
 // runs before routes are streamed.
-//
-// Source and destination credentials must not be restricted to specific IP
-// addresses or networks (for example Cloudflare R2 API-token client IP
-// filtering, S3 bucket policies with aws:SourceIp, or VPC-only endpoints). Beam
-// moves data through many workers on different networks, so restricted
-// credentials make the transfer fail.
 func (client *Client) ResumeProviderTransfer(ctx context.Context, options ProviderTransferResumeOptions) (*TransferPrepareResponse, error) {
 	if err := validateID(options.TransferID, "transferID"); err != nil {
 		return nil, err
@@ -122,12 +105,6 @@ func (client *Client) ResumeProviderTransfer(ctx context.Context, options Provid
 
 // CreateProviderTransfer is the TypeScript createTransfer: a provider transfer
 // that distributes by default. The raw CreateTransfer keeps its Go name.
-//
-// Source and destination credentials must not be restricted to specific IP
-// addresses or networks (for example Cloudflare R2 API-token client IP
-// filtering, S3 bucket policies with aws:SourceIp, or VPC-only endpoints). Beam
-// moves data through many workers on different networks, so restricted
-// credentials make the transfer fail.
 func (client *Client) CreateProviderTransfer(ctx context.Context, options ProviderTransferOptions) (*TransferPrepareResponse, error) {
 	return client.PrepareProviderTransferWithOptions(ctx, options)
 }
