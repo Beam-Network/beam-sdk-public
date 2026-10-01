@@ -390,8 +390,6 @@ func (client *Client) PlanTransfer(ctx context.Context, request TransferPlanRequ
 	return &result, nil
 }
 
-// PrepareTransfer prepares a transfer from already-prepared HTTP sources and
-// destinations; see PrepareTransferWithRequest.
 func (client *Client) PrepareTransfer(
 	ctx context.Context,
 	sources []PreparedHTTPSource,
@@ -878,7 +876,6 @@ func firstPositive(values ...int) int {
 	return 0
 }
 
-// CreateAndDistribute creates a raw transfer and distributes it.
 func (client *Client) CreateAndDistribute(ctx context.Context, input TransferCreateRequest) (*TransferCreateResponse, error) {
 	result, err := client.CreateTransfer(ctx, input)
 	if err != nil {

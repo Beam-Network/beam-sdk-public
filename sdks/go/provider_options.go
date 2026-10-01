@@ -12,7 +12,6 @@ import (
 // the transfer's route-stream lock, so they must not call back into this
 // transfer's streaming.
 type ProviderTransferOptions struct {
-	// Sources and Destinations are the storage to read from and write to.
 	Sources      []ProviderSource
 	Destinations []ProviderDestination
 	Name         string
