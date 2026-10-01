@@ -266,29 +266,6 @@ func (client *Client) Close() {
 	}
 }
 
-func CalculateOptimalChunkSize(totalSize int64) int64 {
-	const mb = 1024 * 1024
-	const gb = 1024 * mb
-	const minChunk = 5 * mb
-	const maxChunk = 5 * mb
-	const targetChunks = 10
-
-	if totalSize <= minChunk {
-		return totalSize
-	}
-	if totalSize < gb {
-		ideal := totalSize / targetChunks
-		if ideal < minChunk {
-			return minChunk
-		}
-		if ideal > maxChunk {
-			return maxChunk
-		}
-		return ideal
-	}
-	return maxChunk
-}
-
 // CreateTransfer creates a raw (non-provider) transfer. It is the Go name for
 // the TypeScript createRawTransfer; see CreateRawTransfer.
 //
@@ -298,9 +275,6 @@ func CalculateOptimalChunkSize(totalSize int64) int64 {
 // moves data through many workers on different networks, so restricted
 // credentials make the transfer fail.
 func (client *Client) CreateTransfer(ctx context.Context, input TransferCreateRequest) (*TransferCreateResponse, error) {
-	if input.ChunkSize == 0 {
-		input.ChunkSize = CalculateOptimalChunkSize(input.TotalSize)
-	}
 	var result TransferCreateResponse
 	if input.TransferID == "" {
 		input.TransferID = transferIDForIdempotencyKey(input.IdempotencyKey)
@@ -394,8 +368,6 @@ type TransferPlanRequest struct {
 	Destinations  []PreparedDestination
 	Name          string
 	URLsExpiresAt string
-	// ChunkSize requests a plan chunk size; BeamCore may raise it.
-	ChunkSize int64
 }
 
 // PlanTransfer asks BeamCore for the compact plan a transfer would use without
@@ -414,9 +386,6 @@ func (client *Client) PlanTransfer(ctx context.Context, request TransferPlanRequ
 	}
 	if request.Name != "" {
 		body["name"] = request.Name
-	}
-	if request.ChunkSize > 0 {
-		body["chunk_size"] = request.ChunkSize
 	}
 	if request.URLsExpiresAt != "" {
 		body["urls_expires_at"] = request.URLsExpiresAt
@@ -504,8 +473,8 @@ func (client *Client) prepareTransferWithRequestKey(ctx context.Context, request
 	if request.URLsExpiresAt != "" {
 		body["urls_expires_at"] = request.URLsExpiresAt
 	}
-	if request.ChunkSize > 0 {
-		body["chunk_size"] = request.ChunkSize
+	if request.providerPartSize > 0 {
+		body["provider_part_size"] = request.providerPartSize
 	}
 
 	var result TransferPrepareResponse

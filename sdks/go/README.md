@@ -169,7 +169,7 @@ Route replay after a Runtime epoch change reuses the negotiated Hub plan; it nev
 
 ## Provider Transfer Options
 
-`CreateProviderTransfer` (the TypeScript `createTransfer`) and `PrepareProviderTransferWithOptions` take `ProviderTransferOptions`: `Sources`, `Destinations`, `Name`, `ExpiresIn` (1 hour), `Distribute` (true when nil), `ChunkSize`, `IdempotencyKey`, `RouteGenerationID`, `Ownership`, and the callbacks below. The positional `PrepareProviderTransfer` remains and behaves as before.
+`CreateProviderTransfer` (the TypeScript `createTransfer`) and `PrepareProviderTransferWithOptions` take `ProviderTransferOptions`: `Sources`, `Destinations`, `Name`, `ExpiresIn` (1 hour), `Distribute` (true when nil), `IdempotencyKey`, `RouteGenerationID`, `Ownership`, and the callbacks below. The positional `PrepareProviderTransfer` remains and behaves as before.
 
 - `OnBeforeTransferPrepare` runs after sources are signed and before `transfer.prepare`.
 - `OnPrepared` runs after prepare and before routes stream, including during resume.
@@ -223,6 +223,7 @@ The multipart limits are exported as `MultipartMaxPartNumber` (10,000), `Multipa
 
 ## Breaking And Behavior Changes
 
+- **Breaking:** chunk size is chosen by Beam; the option was removed. `TransferCreateRequest`, `TransferPlanRequest`, `TransferPrepareRequest`, and `ProviderTransferOptions` no longer have a `ChunkSize` field, `CalculateOptimalChunkSize` is removed, and `CreateTransfer` no longer sends a default chunk size. For a Hugging Face multipart destination, the provider flow sends the Hub's part size to `transfer.prepare` as `provider_part_size`.
 - **Breaking:** the SDK speaks `transfer-client-control/v7`. Multipart destinations use consecutive part numbers (`MultipartAttemptSlotCount` is 1, `MultipartMaxSourceChunks` is 10,000, and `MultipartPartNumber` rejects any slot other than 0); a retried chunk reuses its part, and Runtime-directed staged recovery copies a new attempt into the original upload with UploadPartCopy.
 - **Breaking:** `SignedChunkRoute.DeliveryIndex` changed from `int` to `*int` so delivery index 0 is distinguishable from unset. Code that sets or reads it must take or dereference a pointer.
 - Options now record invalid values instead of dropping them silently. `NewClient` still ignores the recorded errors and keeps defaults; the new `New` constructor returns them (joined) and fails.
@@ -233,7 +234,7 @@ The multipart limits are exported as `MultipartMaxPartNumber` (10,000), `Multipa
 
 ## Differences From The TypeScript SDK
 
-- `CreateTransfer` is the raw transfer in Go; `CreateRawTransfer` is its TypeScript-named alias, and it still derives a default chunk size. The TypeScript provider-aware `createTransfer` is `CreateProviderTransfer`.
+- `CreateTransfer` is the raw transfer in Go; `CreateRawTransfer` is its TypeScript-named alias. The TypeScript provider-aware `createTransfer` is `CreateProviderTransfer`.
 - Optional TypeScript inputs are options structs: `ProviderTransferOptions`, `ProviderTransferResumeOptions`, `TransferPrepareRequest` (`PrepareTransferWithRequest`, which also accepts an explicit `TransferID`), `TransferPlanRequest`, and `WaitForTransferOptions`. The positional methods remain.
 - The TypeScript `signal` is `ProviderTransferOptions.Ownership`; the foreground `ctx` keeps continue-recovery semantics.
 - Callbacks return `error` and receive the foreground `ctx`.

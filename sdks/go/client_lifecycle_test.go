@@ -37,6 +37,11 @@ func TestLifecycleIdempotencyKeysFollowTransferDerivations(t *testing.T) {
 	if call.idempotencyKey != prepareKey || call.payload["route_generation_id"] != stableIDFromIdentity("beam-route-generation:"+prepareKey) {
 		t.Fatalf("prepare key=%q generation=%v", call.idempotencyKey, call.payload["route_generation_id"])
 	}
+	for _, key := range []string{"chunk_size", "provider_part_size"} {
+		if _, sent := call.payload[key]; sent {
+			t.Fatalf("prepare payload must not carry %s: %+v", key, call.payload)
+		}
+	}
 }
 
 func TestCancelTransferReleasesLocalRecoveryOnAnyReply(t *testing.T) {

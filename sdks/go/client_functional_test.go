@@ -34,7 +34,6 @@ func TestClientUsesNATSControlForLifecycle(t *testing.T) {
 		Sources:      []SourceConfig{{"type": "http", "url": "https://source.example/file.bin"}},
 		Destinations: []DestConfig{{"type": "http", "url": "https://dest.example/file.bin"}},
 		TotalSize:    10_485_760,
-		ChunkSize:    5_242_880,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -61,8 +60,8 @@ func TestClientUsesNATSControlForLifecycle(t *testing.T) {
 	if got := callTypes(fake.calls); !sameStrings(got, want) {
 		t.Fatalf("message types mismatch: got %v want %v", got, want)
 	}
-	if fake.calls[0].payload["chunk_size"] == nil {
-		t.Fatalf("create payload omitted chunk_size: %+v", fake.calls[0].payload)
+	if _, sent := fake.calls[0].payload["chunk_size"]; sent {
+		t.Fatalf("create payload must leave chunk size to Beam: %+v", fake.calls[0].payload)
 	}
 }
 
