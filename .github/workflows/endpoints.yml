@@ -1,0 +1,21 @@
+name: Endpoint Leak Check
+
+# Deliberately has no path filter. A publishable tree can gain an endpoint from
+# any change, and the publish workflows run this too late to stop a review.
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Refuse publishable trees containing internal endpoints or names
+        # The name check runs only where the secret is configured. The publish
+        # workflows require it.
+        env:
+          BEAM_PUBLISH_DENYLIST: ${{ secrets.BEAM_PUBLISH_DENYLIST }}
+        run: scripts/check-no-internal-endpoints.sh .

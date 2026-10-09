@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Beam Web SDK — example</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Beam Web SDK</h1>
+      <p class="lede">
+        Everything below runs against a local broker. The page holds a short-lived scoped token and never sees a Beam
+        API key.
+      </p>
+      <p class="session">
+        <span id="session-state" class="badge">not connected</span>
+        <span id="session-scopes" class="muted"></span>
+      </p>
+    </header>
+
+    <main>
+      <section>
+        <h2>Rooms and live media</h2>
+        <div class="controls">
+          <button id="create-room" type="button">Create room</button>
+          <button id="join-camera" type="button" disabled>Join with camera</button>
+          <button id="join-viewer" type="button" disabled>Join as viewer</button>
+          <button id="leave" type="button" disabled>Leave</button>
+        </div>
+        <p id="room-id" class="muted"></p>
+        <div id="videos" class="videos"></div>
+        <ul id="room-events" class="log" aria-live="polite"></ul>
+      </section>
+
+      <section>
+        <h2>Transfers</h2>
+        <div class="controls">
+          <label for="source">from</label>
+          <input id="source" value="s3:reports" />
+          <label for="destination">to</label>
+          <input id="destination" value="archive:2026" />
+          <button id="start-transfer" type="button">Start transfer</button>
+          <button id="cancel-transfer" type="button" disabled>Cancel</button>
+        </div>
+        <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100">
+          <div id="progress-bar"></div>
+        </div>
+        <p id="transfer-state" class="muted">no transfer yet</p>
+        <ul id="transfer-events" class="log" aria-live="polite"></ul>
+      </section>
+    </main>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

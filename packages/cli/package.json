@@ -1,0 +1,51 @@
+{
+  "name": "@beam-network/cli",
+  "version": "0.4.3",
+  "description": "Command line tools for BEAM transfers.",
+  "keywords": [
+    "beam",
+    "transfer",
+    "cli",
+    "bandwidth",
+    "storage"
+  ],
+  "homepage": "https://docs.b1m.ai/docs/sdk",
+  "bugs": {
+    "url": "https://github.com/Beam-Network/beam-sdk-public/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Beam-Network/beam-sdk-public.git",
+    "directory": "packages/cli"
+  },
+  "license": "MIT",
+  "author": "Beam Network",
+  "type": "module",
+  "sideEffects": false,
+  "bin": {
+    "beam-send": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "tsc -p tsconfig.json --noEmit && npm run test:functional",
+    "test:functional": "npm run build && node --test test/cli.functional.test.mjs",
+    "lint": "tsc -p tsconfig.json --noEmit"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@beam-network/sdk": "0.9.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.5.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

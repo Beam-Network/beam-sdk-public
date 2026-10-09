@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.venv/
+venv/
+sdks/python/.venv-wsl/
+
+# JavaScript / TypeScript
+node_modules/
+*.tsbuildinfo
+sdks/typescript/dist/
+sdks/typescript/*.tgz
+packages/cli/dist/
+packages/cli/*.tgz
+packages/web-sdk/*.tgz
+packages/web-sdk-server/*.tgz
+coverage/
+docs/api/
+
+# Go
+sdks/go/bin/
+
+# Rust
+sdks/rust/target/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+.env.local
+
+# Local transfer artifacts
+sdks/python/test_downloads/
+sdks/python/.local-beam-auth.json
+sdks/python/.local-runtime/
+sdks/python/beam-e2e-source.bin
+sdks/python/moto.log
+sdks/python/LOCAL_CLI_S3_E2E.md
+sdks/python/tools/local_cli_e2e.py
