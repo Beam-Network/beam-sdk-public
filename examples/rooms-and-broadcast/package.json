@@ -1,0 +1,14 @@
+{
+  "name": "@beam-network/example-rooms-and-broadcast",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node server/index.js",
+    "start": "node server/index.js"
+  },
+  "dependencies": {
+    "@beam-network/web-sdk": "0.1.0",
+    "@beam-network/web-sdk-server": "0.1.0"
+  }
+}

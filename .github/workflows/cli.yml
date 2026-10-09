@@ -1,0 +1,32 @@
+name: CLI CI
+
+on:
+  push:
+    branches: [main, dev]
+    paths:
+      - "packages/cli/**"
+      - "sdks/typescript/**"
+      - "package.json"
+      - ".github/workflows/cli.yml"
+  pull_request:
+    paths:
+      - "packages/cli/**"
+      - "sdks/typescript/**"
+      - "package.json"
+      - ".github/workflows/cli.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm install
+      # The CLI imports @beam-network/sdk, so the workspace dependency is built
+      # first. sdks/typescript is in this workflow's paths for the same reason:
+      # a change there can break the CLI without touching packages/cli.
+      - run: npm run build -w @beam-network/sdk
+      - run: npm run build -w @beam-network/cli
+      - run: npm run test -w @beam-network/cli

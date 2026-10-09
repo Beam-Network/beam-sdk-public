@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Web Agent SDK example</title>
+  <style>
+    body {
+      font: 16px system-ui;
+      max-width: 960px;
+      margin: 2rem auto;
+      padding: 0 1rem;
+    }
+    fieldset {
+      margin: 1rem 0;
+    }
+    label {
+      display: block;
+      margin: 0.5rem 0;
+    }
+    input,
+    select {
+      max-width: 100%;
+      width: 32rem;
+    }
+    button {
+      margin: 0.3rem;
+    }
+    video {
+      width: 45%;
+      background: #111;
+    }
+    pre {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    small {
+      display: block;
+    }
+  </style>
+  <h1>Web Agent SDK</h1>
+  <p>
+    These tabs share the connected instance’s room membership. Disconnect closes this tab’s resources. Leaving a room
+    affects every browser using the instance.
+  </p>
+  <fieldset>
+    <legend>Connection</legend>
+    <label>WebSocket URL <input id="url" value="ws://127.0.0.1:8640/v1/connect" /></label>
+    <label>Instance API credential <input id="credential" type="password" autocomplete="off" /></label>
+    <button id="connect">Connect</button><button id="disconnect">Disconnect</button><span id="state">disconnected</span>
+    <small>Use an instance API credential, never a Beam API key. Nothing is saved in browser storage.</small>
+  </fieldset>
+  <fieldset>
+    <legend>Room and channel</legend>
+    <label>Room ID <input id="room" /></label
+    ><label>Invitation (optional) <input id="invitation" type="password" autocomplete="off" /></label>
+    <button id="join">Join room</button><button id="discover">Load channels</button
+    ><button id="leave">Leave room for all browsers</button>
+    <label
+      >Channel
+      <select id="channel"></select></label
+    ><button id="subscribe">Subscribe</button><button id="unsubscribe">Unsubscribe</button>
+  </fieldset>
+  <fieldset>
+    <legend>Messages</legend>
+    <label>Message <input id="message" value="Hello from the SDK" /></label><button id="send">Send</button>
+  </fieldset>
+  <fieldset>
+    <legend>Media</legend>
+    <button id="camera">Publish camera + microphone</button><button id="screen">Publish screen</button
+    ><button id="stopPublish">Stop publishing</button>
+    <label
+      >Broadcast
+      <select id="broadcast"></select></label
+    ><button id="watch">Watch</button><button id="stopWatch">Stop watching</button>
+    <video id="local" autoplay muted playsinline></video><video id="remote" autoplay controls playsinline></video>
+  </fieldset>
+  <pre id="log" aria-live="polite"></pre>
+  <script type="module" src="/app.js"></script>
+</html>
