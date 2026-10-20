@@ -11,6 +11,7 @@ sdks/
 packages/cli/
 packages/vscode/
 packages/zapier/
+packages/cre/
 python/
 scripts/
 specs/
@@ -18,4 +19,3 @@ README.md
 S3_COMPATIBLE_PROVIDER_CONFIG.md
 HUGGINGFACE_PROVIDER.md
 docs/VS_CODE_EXTENSION.md
-packages/cre/

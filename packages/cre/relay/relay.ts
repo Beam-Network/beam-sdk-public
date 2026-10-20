@@ -55,6 +55,8 @@ export type RelaySettings = {
   levels: ReceiptLevels
   /** Where this deployment's Room deliveries and jobs publish; each is null when it starts none. */
   routes: DeploymentRoutes
+  /** Whether the relay starts transfers through Studio; false records receipts only. */
+  starts: boolean
 }
 
 /**
@@ -171,10 +173,10 @@ export const runReceipts = async (io: RelayIO, settings: RelaySettings): Promise
   return entries.length
 }
 
-/** One relay pass: starts up to the finalized block, then receipts for whatever is open. */
+/** One relay pass: starts up to the finalized block when the relay starts transfers, then receipts for whatever is open. */
 export const runOnce = async (io: RelayIO, settings: RelaySettings) => {
   const finalized = await io.finalizedBlock()
-  const started = await runStarts(io, settings, finalized)
+  const started = settings.starts ? await runStarts(io, settings, finalized) : 0
   const recorded = await runReceipts(io, settings)
   return { finalized, started, recorded }
 }

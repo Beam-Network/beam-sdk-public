@@ -412,6 +412,10 @@ a chain, `relay/` does the work of both workflows from one process.
 - **Room attestations.** A [bridge](#on-a-chain-without-cre) with `contract` answers lets
   Room members ask about publications and transfers; the relay records the receipts it
   opens requests for.
+- **Receipts only.** With `starts: false` in the config, the relay skips the start pass and
+  needs no Studio. Contracts then ask for receipts of transfers and Room deliveries that
+  already happened (`requestReceipt`, `requestRoomReceipt`). Transfer requests stay open
+  until something else starts them, and `signDeliveries` must be false.
 - **Trust.** A relay is one operator, so its receipts are Beam-reported only. Deploy the
   contract with `donAttested` false and the relay's account as the forwarder. Readers
   see the difference in `level`, and `donAttested()` says which deployment it is.
@@ -443,10 +447,10 @@ git ignores.
 | `RELAY_PRIVATE_KEY` | The contract's forwarder account. It pays the gas for receipts. |
 | `BEAM_API_KEY` | A key of the `beamClientId` user with `transfers:read` (and `room:objects:read` for Room receipts). |
 | `BEAM_ORG_ID` | The organization that owns the Rooms; needed only for Room receipt requests. |
-| `STUDIO_WEBHOOK_URL` | The Studio inbound webhook URL. |
-| `STUDIO_WEBHOOK_SIGNING_SECRET` | The trigger's signing secret, when `signDeliveries` is true. |
-| `STUDIO_ROOM_WEBHOOK_URL` | The Room workflow's webhook URL, when the config has a `roomDelivery` route. |
-| `STUDIO_ROOM_WEBHOOK_SIGNING_SECRET` | Its signing secret, with a route and `signDeliveries`. |
+| `STUDIO_WEBHOOK_URL` | The Studio inbound webhook URL, when `starts` is true. |
+| `STUDIO_WEBHOOK_SIGNING_SECRET` | The trigger's signing secret, when `starts` and `signDeliveries` are true. |
+| `STUDIO_ROOM_WEBHOOK_URL` | The Room workflow's webhook URL, when `starts` is true and the config has a `roomDelivery` route. |
+| `STUDIO_ROOM_WEBHOOK_SIGNING_SECRET` | Its signing secret, with `starts`, a route and `signDeliveries`. |
 
 Before its first pass the relay checks the chain id, that the contract is a relay
 deployment whose forwarder is the relay's account, and that `GET /auth/me` returns
@@ -771,9 +775,12 @@ cre workflow deploy workflows/start-transfer --target production-settings
 
 The workflows, the relay and the bridge's lookups only read. `GET /transfers/:id` needs
 `transfers:read`; `GET /auth/me` needs any valid key; the Room receipt and publication
-lookup routes need `room:objects:read`. Create `BEAM_API_KEY` as a service account key with
-the console's **"Read-only: transfers + Room evidence"** preset, which holds exactly
-`transfers:read` and `room:objects:read`: it cannot create transfers or change Rooms.
+lookup routes need `room:objects:read`. Create `BEAM_API_KEY` as an API key (`b1m_…`) on
+the console's **API keys** page, then apply the **"Read-only: transfers + Room evidence"**
+preset in that key's permission matrix. The preset holds exactly `transfers:read` and
+`room:objects:read`: the key cannot create transfers or change Rooms. A service account
+credential (`bm_sa_…`) does not work here: it administers keys and billing through
+`api.b1m.ai`, and BeamCore accepts only API keys.
 Create it in the organization whose key starts the transfers (the Studio credential): Beam
 attributes every key an organization issues to one identity, so both keys share the
 `beamClientId` that transfer ids derive from, and `GET /transfers/:id` only returns that

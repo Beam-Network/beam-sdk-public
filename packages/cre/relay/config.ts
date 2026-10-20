@@ -28,6 +28,11 @@ export const relayConfigSchema = z
     roomApiBaseUrl: httpUrl,
     /** `user_id` from `GET /auth/me` for `BEAM_API_KEY`; transfer ids derive from it. */
     beamClientId: z.string().min(1),
+    /**
+     * Start the transfers `TransferRequested` logs ask for, through Studio. With false the relay records receipts
+     * only and needs no Studio; transfer requests stay open until something else starts them.
+     */
+    starts: z.boolean(),
     /** Sign every Studio delivery; the Studio triggers must then require signatures. */
     signDeliveries: z.boolean(),
     /**
@@ -56,6 +61,10 @@ export const relayConfigSchema = z
     pollIntervalSeconds: z.number().int().min(5).max(3600),
   })
   .strict()
+  .refine((config) => config.starts || !config.signDeliveries, {
+    message: 'signDeliveries needs starts: only Studio deliveries are signed',
+    path: ['signDeliveries'],
+  })
   .refine((config) => !config.jobOutput || config.roomDelivery, {
     message: "jobOutput needs roomDelivery, the route a job's input is published on",
     path: ['jobOutput'],
@@ -69,9 +78,10 @@ export type RelaySecrets = {
   beamApiKey: string
   /** Needed only to look up Room receipts. */
   beamOrgId: string | null
-  studioWebhookUrl: string
+  /** The transfer workflow's webhook, when the relay starts transfers. */
+  studioWebhookUrl: string | null
   studioSigningSecret: string | null
-  /** The Room workflow's webhook, when the config has a Room route. */
+  /** The Room workflow's webhook, when the relay starts transfers and the config has a Room route. */
   studioRoomWebhookUrl: string | null
   studioRoomSigningSecret: string | null
 }
@@ -89,10 +99,10 @@ export const secretsFromEnv = (env: Record<string, string | undefined>, config: 
     relayPrivateKey,
     beamApiKey: required('BEAM_API_KEY'),
     beamOrgId: env.BEAM_ORG_ID?.trim() || null,
-    studioWebhookUrl: required('STUDIO_WEBHOOK_URL'),
-    studioSigningSecret: config.signDeliveries ? required('STUDIO_WEBHOOK_SIGNING_SECRET') : null,
-    studioRoomWebhookUrl: config.roomDelivery ? required('STUDIO_ROOM_WEBHOOK_URL') : null,
+    studioWebhookUrl: config.starts ? required('STUDIO_WEBHOOK_URL') : null,
+    studioSigningSecret: config.starts && config.signDeliveries ? required('STUDIO_WEBHOOK_SIGNING_SECRET') : null,
+    studioRoomWebhookUrl: config.starts && config.roomDelivery ? required('STUDIO_ROOM_WEBHOOK_URL') : null,
     studioRoomSigningSecret:
-      config.roomDelivery && config.signDeliveries ? required('STUDIO_ROOM_WEBHOOK_SIGNING_SECRET') : null,
+      config.starts && config.roomDelivery && config.signDeliveries ? required('STUDIO_ROOM_WEBHOOK_SIGNING_SECRET') : null,
   }
 }

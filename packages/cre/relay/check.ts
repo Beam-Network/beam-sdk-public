@@ -5,7 +5,7 @@ import type { Observation, PublicationLookup } from '../workflows/transfer-recei
 import { decodeReport, Level, receiptLevels, RequestKind, TransferKind } from '../workflows/transfer-receipts/receipts'
 import type { OpenRequest, Subject } from '../workflows/transfer-receipts/subjects'
 import { transferIdForRequest } from '../workflows/transfer-receipts/transfer-id'
-import { relayConfigSchema } from './config'
+import { relayConfigSchema, secretsFromEnv } from './config'
 import { MAX_ENTRIES_PER_REPORT, type RelayIO, type RelaySettings, runOnce, type TransferRequestLog } from './relay'
 
 const check = (name: string, actual: unknown, expected: unknown) => {
@@ -26,6 +26,7 @@ const settings: RelaySettings = {
   clientId: CLIENT_ID,
   levels: receiptLevels(false),
   routes: { roomDelivery: null, jobOutput: null },
+  starts: true,
 }
 const requestId = (n: number) => `0x${n.toString(16).padStart(64, '0')}` as Hex
 
@@ -259,5 +260,24 @@ class World {
   check('17 receipts go out as 14 + 3', [pass.recorded, world.reports.map((report) => report.standard.length)], [count, [14, 3]])
 }
 
-const example = relayConfigSchema.safeParse(await Bun.file(new URL('config.bittensor-testnet.json', import.meta.url)).json())
+// Receipts only: no start pass, and receipts of transfers started elsewhere are still recorded.
+{
+  const world = new World()
+  const r9 = requestId(9)
+  world.request(r9, 101n)
+  world.finalized = 105n
+  const receiptsOnly = { ...settings, starts: false }
+  const pass = await runOnce(world.io(), receiptsOnly)
+  check('a receipts-only relay starts nothing', [pass.started, world.deliveries.length, world.roomDeliveries.length], [0, 0, 0])
+  world.finished.add(transferIdForRequest(CLIENT_ID, r9))
+  check('and records the receipt of a transfer started elsewhere', (await runOnce(world.io(), receiptsOnly)).recorded, 1)
+}
+
+const exampleJson = await Bun.file(new URL('config.bittensor-testnet.json', import.meta.url)).json()
+const example = relayConfigSchema.safeParse(exampleJson)
 check('config.bittensor-testnet.json matches the config schema', example.success ? 'valid' : example.error.issues, 'valid')
+const relayEnv = { RELAY_PRIVATE_KEY: `0x${'11'.repeat(32)}`, BEAM_API_KEY: 'b1m_check' }
+const receiptsOnlySecrets = secretsFromEnv(relayEnv, relayConfigSchema.parse({ ...exampleJson, starts: false, signDeliveries: false }))
+check('a receipts-only config needs no Studio secrets',
+  [receiptsOnlySecrets.studioWebhookUrl, receiptsOnlySecrets.studioSigningSecret, receiptsOnlySecrets.studioRoomWebhookUrl], [null, null, null])
+check('signDeliveries without starts is refused', relayConfigSchema.safeParse({ ...exampleJson, starts: false, signDeliveries: true }).success, false)

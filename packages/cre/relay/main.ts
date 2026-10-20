@@ -26,7 +26,9 @@ const settings = {
   // A relay is a single operator: its receipts are Beam-reported, never DON-attested.
   levels: receiptLevels(false),
   routes: { roomDelivery: config.roomDelivery, jobOutput: config.jobOutput },
+  starts: config.starts,
 }
+if (!config.starts) log('receipts only: transfer requests stay open until something else starts them')
 
 let stopping = false
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {

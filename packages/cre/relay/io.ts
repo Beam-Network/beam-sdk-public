@@ -82,7 +82,7 @@ export const createRelayIO = (config: RelayConfig, secrets: RelaySecrets, log: (
     deliver: async (request, workflow): Promise<StudioOutcome> => {
       const url = workflow === 'room' ? secrets.studioRoomWebhookUrl : secrets.studioWebhookUrl
       const signingSecret = workflow === 'room' ? secrets.studioRoomSigningSecret : secrets.studioSigningSecret
-      if (!url) return { state: 'refused', status: 0, reason: 'no Room workflow webhook is configured' }
+      if (!url) return { state: 'refused', status: 0, reason: `no ${workflow} workflow webhook is configured` }
       const body = webhookBody(request.requestId, request.requester, request.input)
       const timestamp = Math.floor(Date.now() / 1000)
       const headers: Record<string, string> = {

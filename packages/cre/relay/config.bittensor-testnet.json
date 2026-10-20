@@ -9,6 +9,7 @@
   "beamApiBaseUrl": "https://YOUR-DEV-BEAMCORE-HOST",
   "roomApiBaseUrl": "https://YOUR-DEV-COORDINATOR-HOST",
   "beamClientId": "YOUR-BEAM-USER-ID",
+  "starts": true,
   "signDeliveries": true,
   "cursorPath": "./relay-cursor.json",
   "pollIntervalSeconds": 30,
