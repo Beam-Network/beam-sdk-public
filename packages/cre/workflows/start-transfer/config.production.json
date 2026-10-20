@@ -1,0 +1,11 @@
+{
+  "evms": [
+    {
+      "chainSelectorName": "ethereum-mainnet",
+      "receiptsAddress": "0x0000000000000000000000000000000000000000"
+    }
+  ],
+  "signDeliveries": true,
+  "startRoomDeliveries": false,
+  "startJobs": false
+}

@@ -1,0 +1,18 @@
+{
+  "evms": [
+    {
+      "chainSelectorName": "ethereum-mainnet",
+      "receiptsAddress": "0x0000000000000000000000000000000000000000",
+      "gasLimit": "5000000"
+    }
+  ],
+  "beamApiBaseUrl": "https://beamcore.b1m.ai",
+  "roomApiBaseUrl": "https://coordinator.b1m.ai",
+  "beamClientId": "YOUR-BEAM-USER-ID",
+  "reconcileIntervalMinutes": 5,
+  "reconcileBatchSize": 14,
+  "httpTriggerAuthorizedKeys": [],
+  "roomDelivery": null,
+  "jobOutput": null,
+  "attestationReplyUrl": null
+}

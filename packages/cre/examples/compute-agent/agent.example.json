@@ -1,0 +1,16 @@
+{
+ "rpcUrl": "https://ethereum-sepolia-rpc.publicnode.com",
+ "receiptsAddress": "0x0000000000000000000000000000000000000000",
+ "transferRequestedTopic": "0x20d28bc6406b346ce4198ff55ba67ba5cef2289bc4a70cbfd72791bcff891a44",
+ "startBlock": 0,
+ "confirmations": 2,
+ "logRangeBlocks": 500,
+ "roomId": "btr_room_...",
+ "roomInbox": "~/.beam/state/room-inbox",
+ "outputPath": "/home/agent/jobs/out/job-result.json",
+ "outputWebhookUrlFile": "~/jobs/output-webhook.url",
+ "outputWebhookSecretFile": "~/jobs/output-webhook.secret",
+ "alertTemperatureC": 30,
+ "cooldownSeconds": 120,
+ "pollSeconds": 15
+}

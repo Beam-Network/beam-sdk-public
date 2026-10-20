@@ -1,0 +1,27 @@
+{
+  "name": "@beam-network/cre-room-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Bridge that lets Beam Room members ask the receipts workflow for DON-signed attestations and receive them as Room replies.",
+  "license": "MIT",
+  "type": "module",
+  "main": "main.ts",
+  "scripts": {
+    "start": "bun main.ts",
+    "verify": "bun verify.ts",
+    "check": "bun check.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@noble/hashes": "2.2.0",
+    "viem": "2.57.2",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.3",
+    "typescript": "5.9.3"
+  },
+  "engines": {
+    "bun": ">=1.2.21"
+  }
+}

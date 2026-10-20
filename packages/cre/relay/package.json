@@ -1,0 +1,25 @@
+{
+  "name": "@beam-network/cre-relay",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Relay that starts Beam transfers and records their receipts on EVM chains Chainlink CRE does not serve.",
+  "license": "MIT",
+  "type": "module",
+  "main": "main.ts",
+  "scripts": {
+    "start": "bun main.ts",
+    "check": "bun check.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "viem": "2.57.2",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.3",
+    "typescript": "5.9.3"
+  },
+  "engines": {
+    "bun": ">=1.2.21"
+  }
+}

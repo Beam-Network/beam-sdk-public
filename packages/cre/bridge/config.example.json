@@ -1,0 +1,36 @@
+{
+  "listen": {
+    "hostname": "127.0.0.1",
+    "port": 8098
+  },
+  "basePath": "/beam-bridge",
+  "rooms": {
+    "btr_room_YOUR_ROOM_ID": {
+      "channels": [
+        "btr_channel_YOUR_OBJECT_CHANNEL_ID"
+      ]
+    }
+  },
+  "allowTransferAttestations": false,
+  "answers": {
+    "from": "cre",
+    "forward": {
+      "mode": "gateway",
+      "gatewayUrl": "https://01.gateway.zone-a.cre.chain.link",
+      "workflowId": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "workflow": {
+      "id": "0000000000000000000000000000000000000000000000000000000000000000",
+      "owner": "0x0000000000000000000000000000000000000000"
+    },
+    "signers": {
+      "source": "registry",
+      "rpcUrl": "https://ethereum-rpc.publicnode.com",
+      "registryAddress": "0x76c9cf548b4179F8901cda1f8623568b58215E62"
+    },
+    "paceSeconds": 30,
+    "retrySeconds": 300,
+    "maxAttempts": 12
+  },
+  "statePath": "./bridge-state.json"
+}

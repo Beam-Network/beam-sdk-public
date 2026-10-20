@@ -1,0 +1,20 @@
+{
+  "listen": { "hostname": "127.0.0.1", "port": 8098 },
+  "basePath": "",
+  "rooms": {
+    "btr_room_YOUR_ROOM_ID": { "channels": ["btr_channel_YOUR_OBJECT_CHANNEL_ID"] }
+  },
+  "allowTransferAttestations": false,
+  "answers": {
+    "from": "contract",
+    "chain": {
+      "rpcUrl": "https://test.chain.opentensor.ai",
+      "chainId": 945,
+      "receiptsAddress": "0x0000000000000000000000000000000000000000",
+      "logRangeBlocks": 1000
+    },
+    "pollSeconds": 12,
+    "answerWithinSeconds": 1800
+  },
+  "statePath": "./bridge-state.json"
+}

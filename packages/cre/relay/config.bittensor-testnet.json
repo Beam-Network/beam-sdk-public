@@ -1,0 +1,17 @@
+{
+  "chain": {
+    "rpcUrl": "https://test.chain.opentensor.ai",
+    "chainId": 945,
+    "receiptsAddress": "0x0000000000000000000000000000000000000000",
+    "startBlock": 0,
+    "logRangeBlocks": 1000
+  },
+  "beamApiBaseUrl": "https://YOUR-DEV-BEAMCORE-HOST",
+  "roomApiBaseUrl": "https://YOUR-DEV-COORDINATOR-HOST",
+  "beamClientId": "YOUR-BEAM-USER-ID",
+  "signDeliveries": true,
+  "cursorPath": "./relay-cursor.json",
+  "pollIntervalSeconds": 30,
+  "roomDelivery": null,
+  "jobOutput": null
+}

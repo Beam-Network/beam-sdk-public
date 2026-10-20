@@ -14,6 +14,7 @@ BEAM is a decentralized transfer network. This repository is a multi-language SD
 | Browser | `packages/web-sdk` | npm: `@beam-network/web-sdk` | Rooms, broadcast, transfers |
 | Token broker | `packages/web-sdk-server` | npm: `@beam-network/web-sdk-server` | Server-side token minting |
 | Zapier | `packages/zapier` | Zapier platform (not npm) | Beam in Zapier's app directory |
+| Chainlink CRE and EVM relay | `packages/cre` | CRE project and Bun services (not npm) | Beam transfers started from smart contracts, with transfer, Room delivery and job receipts onchain |
 
 Shared API contracts live in `specs/`. Package-specific docs and release metadata live inside each SDK directory.
 
@@ -138,6 +139,13 @@ npx -p @beam-network/cli beam-send --help
   deliberately not an npm workspace member: Zapier bundles the app's own
   `node_modules` on push, and workspace hoisting would ship an incomplete one. It is
   deployed with `zapier push`, never published to npm.
+- `packages/cre/` lets smart contracts use Beam. It holds the `BeamTransferReceipts`
+  contract (Foundry); two Chainlink CRE workflows, `start-transfer` and
+  `transfer-receipts`, which start Beam transfers and record DON-attested receipts; a
+  relay that does both on EVM chains CRE does not serve, such as Bittensor EVM; a Room
+  bridge for attestations inside a Room; and an example compute agent. Like Zapier it is
+  not an npm workspace member; each workflow and service has its own `package.json` and
+  lockfile.
 - `examples/rooms-and-broadcast/` is a runnable browser-SDK example.
 - `specs/` contains shared API contracts used across language packages.
 - `docs/web-sdk/` documents the browser SDK's architecture, authentication, and capabilities.

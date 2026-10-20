@@ -18,6 +18,7 @@ export default tseslint.config(
       "packages/cli/**",
       "packages/vscode/**",
       "packages/zapier/**",
+      "packages/cre/**",
       // Untracked local Python trees; they carry vendored browser JS that has
       // nothing to do with this monorepo's sources.
       "python/**",
