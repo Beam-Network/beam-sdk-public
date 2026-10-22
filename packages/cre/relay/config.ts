@@ -58,6 +58,21 @@ export const relayConfigSchema = z
       .nullable(),
     /** File holding the next block to scan for requests. */
     cursorPath: z.string().min(1),
+    /**
+     * Customers mode: also records the receipts of organizations set up in the Beam console,
+     * read from the website's relay routes, and charges each one credit. Null records Beam's own receipts only.
+     */
+    customers: z
+      .object({
+        /** Beam's API, which serves `/api/onchain-receipts/*`. */
+        registryUrl: httpUrl,
+        /** File holding each organization's every-transfer listing cursor. */
+        cursorPath: z.string().min(1),
+        /** Most every-transfer receipts recorded per organization and pass; the rest wait for the next pass. */
+        maxPerOrganization: z.number().int().min(1).max(1000),
+      })
+      .strict()
+      .nullable(),
     pollIntervalSeconds: z.number().int().min(5).max(3600),
   })
   .strict()
@@ -84,6 +99,9 @@ export type RelaySecrets = {
   /** The Room workflow's webhook, when the relay starts transfers and the config has a Room route. */
   studioRoomWebhookUrl: string | null
   studioRoomSigningSecret: string | null
+  /** Customers mode: the secret the website's relay routes require, and the key customer keys are sealed to. */
+  onchainRelaySecret: string | null
+  sealingPrivateKey: string | null
 }
 
 export const secretsFromEnv = (env: Record<string, string | undefined>, config: RelayConfig): RelaySecrets => {
@@ -104,5 +122,7 @@ export const secretsFromEnv = (env: Record<string, string | undefined>, config: 
     studioRoomWebhookUrl: config.starts && config.roomDelivery ? required('STUDIO_ROOM_WEBHOOK_URL') : null,
     studioRoomSigningSecret:
       config.starts && config.roomDelivery && config.signDeliveries ? required('STUDIO_ROOM_WEBHOOK_SIGNING_SECRET') : null,
+    onchainRelaySecret: config.customers ? required('ONCHAIN_RELAY_SECRET') : null,
+    sealingPrivateKey: config.customers ? required('RELAY_SEALING_PRIVATE_KEY') : null,
   }
 }

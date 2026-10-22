@@ -1,5 +1,6 @@
 // The Beam relay for chains Chainlink CRE does not serve. Usage: bun main.ts <config.json> [--once]
 import { readFile } from 'node:fs/promises'
+import { privateKeyToAccount } from 'viem/accounts'
 import { receiptLevels } from '../workflows/transfer-receipts/receipts'
 import { relayConfigSchema, secretsFromEnv } from './config'
 import { createRelayIO } from './io'
@@ -27,6 +28,8 @@ const settings = {
   levels: receiptLevels(false),
   routes: { roomDelivery: config.roomDelivery, jobOutput: config.jobOutput },
   starts: config.starts,
+  relayAccount: privateKeyToAccount(secrets.relayPrivateKey).address,
+  customers: config.customers && { maxPerOrganization: config.customers.maxPerOrganization },
 }
 if (!config.starts) log('receipts only: transfer requests stay open until something else starts them')
 
@@ -41,7 +44,7 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
 while (true) {
   try {
     const pass = await runOnce(relay.io, settings)
-    log(`pass: finalized ${pass.finalized}, ${pass.started} started, ${pass.recorded} recorded`)
+    log(`pass: finalized ${pass.finalized}, ${pass.started} started, ${pass.allowlisted} allowlist changes, ${pass.recorded} recorded`)
   } catch (error) {
     log(`pass failed: ${(error as Error).message}`)
     if (once) process.exitCode = 1

@@ -419,6 +419,9 @@ a chain, `relay/` does the work of both workflows from one process.
 - **Trust.** A relay is one operator, so its receipts are Beam-reported only. Deploy the
   contract with `donAttested` false and the relay's account as the forwarder. Readers
   see the difference in `level`, and `donAttested()` says which deployment it is.
+- **Customers.** With a `customers` block, the relay also records the receipts of
+  organizations set up in the Beam console, and charges each one credit. See
+  [Customers mode](#customers-mode).
 
 ### Running the relay
 
@@ -455,6 +458,62 @@ git ignores.
 Before its first pass the relay checks the chain id, that the contract is a relay
 deployment whose forwarder is the relay's account, and that `GET /auth/me` returns
 `beamClientId`. It refuses to start otherwise.
+
+### Customers mode
+
+Organizations set up onchain receipts in the Beam console. They get them
+two ways, one credit each, charged to the read-only key they registered:
+- **Every transfer.** Each transfer the organization created while its switch was on.
+- **Contract requests.** Each `requestReceipt` or `requestRoomReceipt` from an EVM address
+  of theirs that Beam approved. The address pays its own request gas.
+
+The relay pays the recording gas either way. Each pass, before receipts:
+1. **Registry.** It reads `GET <registryUrl>/api/onchain-receipts/accounts` and opens each
+   organization's key with `RELAY_SEALING_PRIVATE_KEY`. The console seals keys to its public
+   half, and `sealed-box.ts` matches the console's format and test vector. A key that does not
+   open is logged and its organization skipped.
+2. **Allowlist.** It calls `setRequester(address, true)` for approved addresses and `false` for
+   revoked ones still allowed, then reports each transaction. Only the contract's owner can,
+   so the relay's account must own it.
+
+Then, for receipts:
+- **Who owns a request.**
+  - A request the relay's own account opened is Beam's: it is read with `BEAM_API_KEY` and
+    never charged.
+  - A request from an approved address is read with its organization's key and charged to it.
+  - Any other address's request stays open.
+- **Every transfer.** The relay lists each organization's finished transfers
+  (`GET /transfers?order_by=completed_at`) after a per-organization cursor in
+  `customers.cursorPath`. It keeps those created inside one of the organization's periods and
+  records them with no request, at most `maxPerOrganization` per pass. It lists an
+  organization while its switch is on and for 7 days after, for transfers still running.
+- **Charging.** Each customer receipt's credit is held before the report is written
+  (`charges/reserve`) and committed once it is mined (`charges/commit`). The website keys the
+  charge by the receipt, so a receipt asked for both ways is charged once.
+  - A refused charge (out of credits, say) writes nothing: the request stays open, and the
+    listing cursor waits before the transfer.
+  - A failed write keeps the hold, and the next pass writes again.
+  - A receipt the contract already holds is committed too: it is onchain.
+  - An already committed charge is never written again.
+
+To set it up:
+1. Run `bun run sealing-key /opt/beam-relay/relay.env`. It appends the private key to the
+   env file and prints `ONCHAIN_RELAY_PUBLIC_KEY=…`; set that on the Beam console.
+2. Set the same random `ONCHAIN_RELAY_SECRET` on the Beam API and in the relay's env.
+3. Add the block to the config:
+
+```json
+"customers": {
+  "registryUrl": "https://api.b1m.ai",
+  "cursorPath": "./customers-cursor.json",
+  "maxPerOrganization": 50
+}
+```
+
+| Variable | What it is |
+| --- | --- |
+| `ONCHAIN_RELAY_SECRET` | Sent as `x-onchain-relay-secret` to the website's relay routes; the same value as the Beam API's. |
+| `RELAY_SEALING_PRIVATE_KEY` | The X25519 key customer keys are sealed to, raw base64url. Replacing it orphans every registered key. |
 
 ### Bittensor EVM
 

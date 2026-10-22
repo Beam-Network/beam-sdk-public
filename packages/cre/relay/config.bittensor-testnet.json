@@ -14,5 +14,6 @@
   "cursorPath": "./relay-cursor.json",
   "pollIntervalSeconds": 30,
   "roomDelivery": null,
-  "jobOutput": null
+  "jobOutput": null,
+  "customers": null
 }

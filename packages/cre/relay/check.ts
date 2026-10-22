@@ -1,12 +1,22 @@
 // Offline checks for the relay's logic against an in-memory chain, Studio and Beam. Run with `bun run check`.
-import type { Hex } from 'viem'
+import type { Address, Hex } from 'viem'
 import type { StudioOutcome } from '../workflows/start-transfer/studio'
 import type { Observation, PublicationLookup } from '../workflows/transfer-receipts/beam'
-import { decodeReport, Level, receiptLevels, RequestKind, TransferKind } from '../workflows/transfer-receipts/receipts'
+import { decodeReport, Level, receiptLevels, RequestKind, roomReceiptKey, TransferKind } from '../workflows/transfer-receipts/receipts'
 import type { OpenRequest, Subject } from '../workflows/transfer-receipts/subjects'
-import { transferIdForRequest } from '../workflows/transfer-receipts/transfer-id'
+import { bytes16ToTransferId, transferIdForRequest } from '../workflows/transfer-receipts/transfer-id'
 import { relayConfigSchema, secretsFromEnv } from './config'
-import { MAX_ENTRIES_PER_REPORT, type RelayIO, type RelaySettings, runOnce, type TransferRequestLog } from './relay'
+import {
+  type ChargeOutcome,
+  type ChargeSubject,
+  type Customer,
+  type ListedTransfer,
+  nextTransferCursor,
+  projectCharge,
+  type Via,
+} from './customers'
+import { MAX_ENTRIES_PER_REPORT, recordedKey, type RelayIO, type RelaySettings, runOnce, type TransferRequestLog } from './relay'
+import { openSealed } from './sealed-box'
 
 const check = (name: string, actual: unknown, expected: unknown) => {
   const replacer = (_: string, value: unknown) => (typeof value === 'bigint' ? value.toString() : value)
@@ -27,6 +37,8 @@ const settings: RelaySettings = {
   levels: receiptLevels(false),
   routes: { roomDelivery: null, jobOutput: null },
   starts: true,
+  relayAccount: `0x${'ee'.repeat(20)}`,
+  customers: null,
 }
 const requestId = (n: number) => `0x${n.toString(16).padStart(64, '0')}` as Hex
 
@@ -80,11 +92,11 @@ class World {
         return { state: 'accepted', runId }
       },
       openRequests: async () => [...this.open.values()],
-      findPublication: async (subject): Promise<PublicationLookup> => {
+      findPublication: async (subject, _reader): Promise<PublicationLookup> => {
         const publicationId = this.publications.get(`${subject.publisherMemberId}|${subject.requestId}`)
         return publicationId ? { state: 'found', publicationId } : { state: 'absent' }
       },
-      observe: async (subject: Exclude<Subject, { kind: 'roomRequest' | 'job' }>): Promise<Observation> => {
+      observe: async (subject: Exclude<Subject, { kind: 'roomRequest' | 'job' }>, _reader): Promise<Observation> => {
         if (subject.kind === 'room') {
           if (!this.finishedRooms.has(subject.publication)) return { state: 'pending' }
           return {
@@ -118,12 +130,22 @@ class World {
           jobs: jobs.map((entry) => ({ requestId: entry.requestId, computeMember: entry.computeMember })),
         })
         for (const entry of [...standard, ...rooms, ...jobs]) this.open.delete(entry.requestId)
-        return `0x${String(this.reports.length).padStart(64, '0')}` as Hex
+        return { hash: `0x${String(this.reports.length).padStart(64, '0')}` as Hex, recorded: new Set<string>() }
       },
       readCursor: async () => this.cursor,
       saveCursor: async (next) => {
         this.cursor = next
       },
+      customers: async () => [],
+      setRequester: async () => {
+        throw new Error('no customers mode')
+      },
+      reportAllowlist: async () => {},
+      finishedTransfers: async () => [],
+      reserveCharge: async () => ({ state: 'unavailable', status: 0 }),
+      commitCharge: async () => ({ state: 'unavailable', status: 0 }),
+      readTransferCursors: async () => ({}),
+      saveTransferCursors: async () => {},
       log: (line) => this.lines.push(line),
     }
   }
@@ -281,3 +303,277 @@ const receiptsOnlySecrets = secretsFromEnv(relayEnv, relayConfigSchema.parse({ .
 check('a receipts-only config needs no Studio secrets',
   [receiptsOnlySecrets.studioWebhookUrl, receiptsOnlySecrets.studioSigningSecret, receiptsOnlySecrets.studioRoomWebhookUrl], [null, null, null])
 check('signDeliveries without starts is refused', relayConfigSchema.safeParse({ ...exampleJson, starts: false, signDeliveries: true }).success, false)
+
+// Customers mode: organizations set up in the Beam console, their keys sealed to the relay, charged one credit
+// per receipt through the website's relay routes.
+const SHARED_VECTOR = {
+  privateKey: '2DdGFawc0KoPWycO-YVgIBA8DK2KZLznCa4HrprnInI',
+  context: 'onchain-receipts:org_vector:key_vector',
+  plaintext: 'b1m_vector_0123456789abcdefghijklmnopqrstuv',
+  sealed: 'v1.ttbWPfsOMOjXJ1pQl2WhehGqbVzISN2IgH2eqGCJpwo.Mq1pFWNwjiiI_mMX.D3vdPu0MBiZu2fuVRUYw9i-OVRWI1XOSm1kJS-xY_9rxB7DWQYDUoU5vmxbLrVyLZHhwKKjRr9uVY-0',
+}
+check('the relay opens the website sealed-box test vector', openSealed(SHARED_VECTOR.privateKey, SHARED_VECTOR.sealed, SHARED_VECTOR.context), SHARED_VECTOR.plaintext)
+check('a vector under another context does not open', (() => { try { openSealed(SHARED_VECTOR.privateKey, SHARED_VECTOR.sealed, 'onchain-receipts:org_b:key_vector'); return 'opened' } catch { return 'refused' } })(), 'refused')
+
+const enc = (value: unknown) => new TextEncoder().encode(JSON.stringify(value))
+check('charge answers map to what the relay does',
+  [
+    projectCharge(200, enc({ operation: { status: 'RESERVED' } })).state,
+    projectCharge(200, enc({ operation: { status: 'COMMITTED' } })).state,
+    projectCharge(200, enc({ operation: { status: 'CANCELED', releaseReason: 'expired' } })).state,
+    projectCharge(200, enc({ operation: { status: 'CANCELED', releaseReason: 'write reverted' } })).state,
+    projectCharge(402, enc({ reason: 'pool_exhausted' })),
+    projectCharge(503, enc({})).state,
+  ],
+  ['held', 'charged', 'held', 'released', { state: 'refused', status: 402, reason: 'pool_exhausted' }, 'unavailable'])
+check('a listing cursor stops just before the oldest transfer not done',
+  nextTransferCursor('2026-10-21T09:00:00.000Z', [
+    { completedAt: '2026-10-21T10:00:00.000Z', done: true },
+    { completedAt: '2026-10-21T11:00:00.000Z', done: false },
+    { completedAt: '2026-10-21T12:00:00.000Z', done: true },
+  ]), '2026-10-21T10:59:59.999Z')
+check('and passes the newest when all are done, or stays without transfers',
+  [nextTransferCursor('2026-10-21T09:00:00.000Z', [{ completedAt: '2026-10-21T12:00:00.000Z', done: true }]), nextTransferCursor('2026-10-21T09:00:00.000Z', [])],
+  ['2026-10-21T12:00:00.000Z', '2026-10-21T09:00:00.000Z'])
+
+const ORG = 'org_customer'
+const APPROVED: Address = `0x${'a1'.repeat(20)}`
+const REVOKED: Address = `0x${'b2'.repeat(20)}`
+const STRANGER: Address = `0x${'c3'.repeat(20)}`
+const PERIOD_START = Date.parse('2026-10-21T10:00:00.000Z')
+const transferId = (n: number) => `9e6540e8-1d2b-4c3a-8f00-${n.toString(16).padStart(12, '0')}`
+const finished = (id: string): Observation => ({
+  state: 'transfer',
+  status: 1,
+  totalBytes: '1048576',
+  bytesTransferred: '1048576',
+  completedAtMs: '1792467120355',
+  planFingerprint: `0x${'aa'.repeat(32)}`,
+  coordinateChecksum: `0x${'bb'.repeat(32)}`,
+})
+const customerSettings: RelaySettings = { ...settings, starts: false, customers: { maxPerOrganization: 2 } }
+
+/** The receipts contract, the website's registry and ledger, and the customer's transfers at Beam. */
+class CustomerWorld {
+  open: OpenRequest[] = []
+  onchain = new Set<string>()
+  allowlist = new Map<Address, boolean>()
+  requesters = [
+    { id: 'req_approved', address: APPROVED, status: 'APPROVED' as const, allowlist: 'NONE' as const },
+    { id: 'req_revoked', address: REVOKED, status: 'REVOKED' as const, allowlist: 'ALLOWED' as const },
+  ]
+  reported: Array<[string, boolean]> = []
+  listed: ListedTransfer[] = []
+  readable = new Set<string>()
+  credits = 10
+  ledger = new Map<string, 'RESERVED' | 'COMMITTED'>()
+  reserves: Array<{ key: string; via: Via['kind'] }> = []
+  writes = 0
+  failWrites = 0
+  failCommits = 0
+  cursors: Record<string, string> = {}
+  lines: string[] = []
+
+  customer(): Customer {
+    return {
+      organizationId: ORG,
+      reader: { apiKey: 'b1m_customer', organizationId: ORG },
+      periods: [{ startedAt: PERIOD_START, endedAt: null }],
+      requesters: this.requesters,
+    }
+  }
+
+  receiptRequest(requester: Address, id: string) {
+    this.open.push({
+      key: `0x${id.replaceAll('-', '').padStart(64, '0')}` as Hex,
+      kind: RequestKind.Receipt,
+      transferKind: 0,
+      requester,
+      openedAt: 0n,
+      requestId: `0x${'00'.repeat(32)}`,
+      transferId: `0x${id.replaceAll('-', '')}` as Hex,
+      room: '',
+      channel: '',
+      publication: '',
+    })
+  }
+
+  finishedTransfer(n: number, createdAt: string, completedAt: string) {
+    this.listed.push({ id: transferId(n), createdAt, completedAt, observation: finished(transferId(n)) })
+  }
+
+  io(): RelayIO {
+    const chargeKey = (subject: ChargeSubject) => recordedKey(subject)
+    return {
+      ...new World().io(),
+      openRequests: async () => [...this.open],
+      observe: async (subject, reader) => {
+        if (subject.kind !== 'transfer') return { state: 'absent' }
+        // Reads are scoped to the key's owner: Beam's key sees none of the customer's transfers.
+        return reader && this.readable.has(subject.transferId) ? finished(subject.transferId) : { state: 'absent' }
+      },
+      writeReport: async (report: Hex) => {
+        this.writes += 1
+        if (this.failWrites > 0) {
+          this.failWrites -= 1
+          throw new Error('onReport reverted')
+        }
+        const recorded = new Set<string>()
+        for (const entry of decodeReport(report).standard) {
+          const key = recordedKey({ kind: 'transfer', transferId: bytes16ToTransferId(entry.transferId) })
+          if (!this.onchain.has(key)) recorded.add(key)
+          this.onchain.add(key)
+          this.open = this.open.filter((request) => recordedKey({ kind: 'transfer', transferId: bytes16ToTransferId(request.transferId) }) !== key)
+        }
+        return { hash: `0x${String(this.writes).padStart(64, '0')}` as Hex, recorded }
+      },
+      customers: async () => [this.customer()],
+      setRequester: async (address, allowed) => {
+        this.allowlist.set(address, allowed)
+        return `0x${'f0'.repeat(32)}` as Hex
+      },
+      reportAllowlist: async (id, allowed) => {
+        this.reported.push([id, allowed])
+        this.requesters = this.requesters.map((requester) =>
+          requester.id === id ? { ...requester, allowlist: (allowed ? 'ALLOWED' : 'REMOVED') as never } : requester)
+      },
+      finishedTransfers: async (_reader, after) => this.listed.filter((transfer) => Date.parse(transfer.completedAt) > Date.parse(after)),
+      reserveCharge: async ({ subject, via }): Promise<ChargeOutcome> => {
+        const key = chargeKey(subject)
+        this.reserves.push({ key, via: via.kind })
+        const existing = this.ledger.get(key)
+        if (existing) return { state: existing === 'COMMITTED' ? 'charged' : 'held' }
+        if (this.credits < 1) return { state: 'refused', status: 402, reason: 'pool_exhausted' }
+        this.ledger.set(key, 'RESERVED')
+        return { state: 'held' }
+      },
+      commitCharge: async (subject): Promise<ChargeOutcome> => {
+        if (this.failCommits > 0) {
+          this.failCommits -= 1
+          return { state: 'unavailable', status: 503 }
+        }
+        const key = chargeKey(subject)
+        if (this.ledger.get(key) === 'RESERVED') this.credits -= 1
+        this.ledger.set(key, 'COMMITTED')
+        return { state: 'charged' }
+      },
+      readTransferCursors: async () => ({ ...this.cursors }),
+      saveTransferCursors: async (cursors) => {
+        this.cursors = { ...cursors }
+      },
+      log: (line) => this.lines.push(line),
+    }
+  }
+}
+
+// The allowlist: an approved address is allowed onchain, a revoked one still allowed is removed, both reported.
+{
+  const world = new CustomerWorld()
+  const pass = await runOnce(world.io(), customerSettings)
+  check('approved addresses are allowed and revoked ones removed, then reported',
+    [pass.allowlisted, [...world.allowlist.entries()], world.reported],
+    [2, [[APPROVED, true], [REVOKED, false]], [['req_approved', true], ['req_revoked', false]]])
+  check('a synced allowlist writes nothing on the next pass', (await runOnce(world.io(), customerSettings)).allowlisted, 0)
+}
+
+// Every transfer: a transfer created while the switch was on is recorded with no request and charged once.
+{
+  const world = new CustomerWorld()
+  world.finishedTransfer(1, '2026-10-21T09:59:59.000Z', '2026-10-21T10:30:00.000Z') // created before the switch
+  world.finishedTransfer(2, '2026-10-21T10:05:00.000Z', '2026-10-21T10:40:00.000Z')
+  const pass = await runOnce(world.io(), customerSettings)
+  check('only the transfer created during the period is recorded, as every transfer',
+    [pass.recorded, [...world.onchain], world.reserves], [1, [`transfer:${transferId(2)}`], [{ key: `transfer:${transferId(2)}`, via: 'every_transfer' }]])
+  check('and charged one credit', [world.credits, world.ledger.get(`transfer:${transferId(2)}`)], [9, 'COMMITTED'])
+  check('the cursor passes both', world.cursors[ORG], '2026-10-21T10:40:00.000Z')
+  const again = await runOnce(world.io(), customerSettings)
+  check('a later pass lists nothing new and charges nothing', [again.recorded, world.credits, world.writes], [0, 9, 1])
+}
+
+// Requests: an approved address's request is charged to its organization; Beam's own and a stranger's are not.
+{
+  const world = new CustomerWorld()
+  world.readable.add(transferId(3))
+  world.receiptRequest(APPROVED, transferId(3))
+  world.receiptRequest(STRANGER, transferId(4))
+  world.receiptRequest(settings.relayAccount, transferId(5))
+  const pass = await runOnce(world.io(), customerSettings)
+  check('the approved address gets its receipt, charged via its request',
+    [pass.recorded, world.reserves, world.credits], [1, [{ key: `transfer:${transferId(3)}`, via: 'requester' }], 9])
+  check("a stranger's request stays open and Beam's own reads with Beam's key, uncharged",
+    [world.open.map((request) => request.requester), world.lines.some((line) => line.includes('1 open requests stay open'))],
+    [[STRANGER, settings.relayAccount], true])
+}
+
+// Asked for both ways: the transfer is listed and requested; one receipt, one charge.
+{
+  const world = new CustomerWorld()
+  world.readable.add(transferId(6))
+  world.finishedTransfer(6, '2026-10-21T10:10:00.000Z', '2026-10-21T10:50:00.000Z')
+  world.receiptRequest(APPROVED, transferId(6))
+  const pass = await runOnce(world.io(), customerSettings)
+  check('a receipt owed both ways is recorded once and charged once', [pass.recorded, world.reserves.length, world.credits, world.cursors[ORG]], [1, 1, 9, '2026-10-21T10:50:00.000Z'])
+}
+
+// Out of credits: nothing is written, the request stays open and the listing waits; a top-up records both.
+{
+  const world = new CustomerWorld()
+  world.credits = 0
+  world.readable.add(transferId(7))
+  world.receiptRequest(APPROVED, transferId(7))
+  world.finishedTransfer(8, '2026-10-21T10:20:00.000Z', '2026-10-21T11:00:00.000Z')
+  const pass = await runOnce(world.io(), customerSettings)
+  check('with no credits nothing is written', [pass.recorded, world.writes, world.open.length], [0, 0, 1])
+  check('and the listing stays before the unpaid transfer', world.cursors[ORG], '2026-10-21T10:59:59.999Z')
+  world.credits = 5
+  const paid = await runOnce(world.io(), customerSettings)
+  check('after a top-up both receipts are recorded and charged', [paid.recorded, world.credits, world.open.length, world.cursors[ORG]], [2, 3, 0, '2026-10-21T11:00:00.000Z'])
+}
+
+// A failed write keeps the holds; the next pass writes again and charges once.
+{
+  const world = new CustomerWorld()
+  world.finishedTransfer(9, '2026-10-21T10:30:00.000Z', '2026-10-21T11:10:00.000Z')
+  world.failWrites = 1
+  const failed = await runOnce(world.io(), customerSettings)
+  check('a failed write records nothing and keeps the hold', [failed.recorded, world.ledger.get(`transfer:${transferId(9)}`), world.credits], [0, 'RESERVED', 10])
+  check('the listing waits for it', world.cursors[ORG], '2026-10-21T11:09:59.999Z')
+  const retried = await runOnce(world.io(), customerSettings)
+  check('the next pass records it and charges once', [retried.recorded, world.credits, world.ledger.get(`transfer:${transferId(9)}`)], [1, 9, 'COMMITTED'])
+}
+
+// A failed commit: the receipt is onchain; the next pass finds the hold, the contract skips it, and it is charged.
+{
+  const world = new CustomerWorld()
+  world.finishedTransfer(10, '2026-10-21T10:30:00.000Z', '2026-10-21T11:20:00.000Z')
+  world.failCommits = 1
+  await runOnce(world.io(), customerSettings)
+  check('a recorded receipt whose commit failed is not charged yet', [world.onchain.size, world.credits, world.cursors[ORG]], [1, 10, '2026-10-21T11:19:59.999Z'])
+  await runOnce(world.io(), customerSettings)
+  check('the next pass charges it once, noting it was already onchain',
+    [world.credits, world.ledger.get(`transfer:${transferId(10)}`), world.lines.some((line) => line.includes('was already onchain'))], [9, 'COMMITTED', true])
+}
+
+// A receipt already charged is never written again, and each pass records at most maxPerOrganization listed transfers.
+{
+  const world = new CustomerWorld()
+  world.ledger.set(`transfer:${transferId(11)}`, 'COMMITTED')
+  world.finishedTransfer(11, '2026-10-21T10:30:00.000Z', '2026-10-21T11:30:00.000Z')
+  for (const n of [12, 13, 14]) world.finishedTransfer(n, '2026-10-21T10:30:00.000Z', `2026-10-21T11:3${n - 11}:00.000Z`)
+  const first = await runOnce(world.io(), customerSettings)
+  check('a charged receipt is skipped but uses one of the two listed slots this pass', [first.recorded, world.credits], [1, 9])
+  const second = await runOnce(world.io(), customerSettings)
+  check('the rest follow on the next passes', [second.recorded, (await runOnce(world.io(), customerSettings)).recorded, world.credits], [2, 0, 7])
+}
+
+const customersConfig = relayConfigSchema.parse({
+  ...exampleJson,
+  starts: false,
+  signDeliveries: false,
+  customers: { registryUrl: 'https://api.example.com/', cursorPath: './customers-cursor.json', maxPerOrganization: 50 },
+})
+check('customers mode needs the relay secret and the sealing key',
+  (() => { try { secretsFromEnv(relayEnv, customersConfig); return 'accepted' } catch (error) { return (error as Error).message } })(), 'Set ONCHAIN_RELAY_SECRET')
+check('with both, they are read', secretsFromEnv({ ...relayEnv, ONCHAIN_RELAY_SECRET: 's', RELAY_SEALING_PRIVATE_KEY: SHARED_VECTOR.privateKey }, customersConfig).sealingPrivateKey, SHARED_VECTOR.privateKey)
+check('the registry URL loses its trailing slash', customersConfig.customers?.registryUrl, 'https://api.example.com')
+check('roomReceiptKey and recordedKey agree on a Room receipt', recordedKey({ kind: 'room', roomKey: roomReceiptKey('r', 'c', 'p') }), `room:${roomReceiptKey('r', 'c', 'p').toLowerCase()}`)

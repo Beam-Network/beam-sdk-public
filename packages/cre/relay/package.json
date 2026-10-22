@@ -9,7 +9,8 @@
   "scripts": {
     "start": "bun main.ts",
     "check": "bun check.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "sealing-key": "bun sealing-key.ts"
   },
   "dependencies": {
     "viem": "2.57.2",
