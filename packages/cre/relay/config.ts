@@ -30,7 +30,8 @@ export const relayConfigSchema = z
     beamClientId: z.string().min(1),
     /**
      * Start the transfers `TransferRequested` logs ask for, through Studio. With false the relay records receipts
-     * only and needs no Studio; transfer requests stay open until something else starts them.
+     * only and needs no Studio; transfer requests stay open until something else starts them, except a customer's,
+     * which customers mode closes.
      */
     starts: z.boolean(),
     /** Sign every Studio delivery; the Studio triggers must then require signatures. */
@@ -60,7 +61,9 @@ export const relayConfigSchema = z
     cursorPath: z.string().min(1),
     /**
      * Customers mode: also records the receipts of organizations set up in the Beam console,
-     * read from the website's relay routes, and charges each one credit. Null records Beam's own receipts only.
+     * read from the website's relay routes, and charges each one credit. It is receipts only (`starts` false): a
+     * customer's request this relay will never answer is closed, at one credit to its organization. Null records
+     * Beam's own receipts only.
      */
     customers: z
       .object({
@@ -83,6 +86,10 @@ export const relayConfigSchema = z
   .refine((config) => !config.jobOutput || config.roomDelivery, {
     message: "jobOutput needs roomDelivery, the route a job's input is published on",
     path: ['jobOutput'],
+  })
+  .refine((config) => !config.customers || !config.starts, {
+    message: "customers mode is receipts only: starts would hand a customer's transfer request to this relay's Studio",
+    path: ['customers'],
   })
 
 export type RelayConfig = z.infer<typeof relayConfigSchema>

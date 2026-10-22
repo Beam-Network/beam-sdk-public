@@ -6,7 +6,7 @@ import { type Observation, projectTransfer } from '../workflows/transfer-receipt
  * Customers mode: organizations set up in the Beam console get their receipts recorded by this
  * relay and pay one credit each, through the website's relay routes. They owe a receipt for one of two reasons:
  * the transfer was created while their "every transfer" switch was on, or an address of theirs that Beam
- * approved asked for it onchain.
+ * approved asked for it onchain. Closing a request of theirs this relay will never answer costs one credit too.
  */
 
 /** Who reads a subject at Beam: null for Beam's own key, else a customer organization's registered key. */
@@ -100,14 +100,20 @@ export const nextTransferCursor = (cursor: string, listed: Array<{ completedAt: 
   return newest.length ? new Date(Math.max(Date.parse(cursor), ...newest)).toISOString() : cursor
 }
 
-/** The receipt a charge is for; the website keys the charge by it. */
-export type ChargeSubject = { kind: 'transfer'; transferId: string } | { kind: 'room'; roomKey: Hex }
+/** A receipt the relay records. */
+export type ReceiptSubject = { kind: 'transfer'; transferId: string } | { kind: 'room'; roomKey: Hex }
 
 /**
- * What the website answered for a charge. `held`: a hold to settle once the receipt is recorded (a new one, or an
- * earlier one not settled yet, expired included: a commit still settles it). `charged`: already recorded and paid.
- * `released`: released for good. `refused`: the organization cannot pay now, or is not owed this receipt; the
- * request stays open and a listed transfer is retried. `unavailable`: try again next pass.
+ * What a charge pays for, and what the website keys it by: a recorded receipt, or closing an open request this
+ * relay will never answer, whose `cancelRequest` gas the requesting organization pays rather than Beam.
+ */
+export type ChargeSubject = ReceiptSubject | { kind: 'request'; requestKey: Hex }
+
+/**
+ * What the website answered for a charge. `held`: a hold to settle once the receipt is recorded or the request
+ * closed (a new one, or an earlier one not settled yet, expired included: a commit still settles it). `charged`:
+ * already done and paid. `released`: released for good. `refused`: the organization cannot pay now, or does not
+ * owe this; the request stays open and a listed transfer is retried. `unavailable`: try again next pass.
  */
 export type ChargeOutcome =
   | { state: 'held' }

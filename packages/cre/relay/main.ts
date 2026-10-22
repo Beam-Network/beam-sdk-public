@@ -4,7 +4,7 @@ import { privateKeyToAccount } from 'viem/accounts'
 import { receiptLevels } from '../workflows/transfer-receipts/receipts'
 import { relayConfigSchema, secretsFromEnv } from './config'
 import { createRelayIO } from './io'
-import { runOnce } from './relay'
+import { createRelayState, runOnce } from './relay'
 
 const args = process.argv.slice(2)
 const configPath = args.find((arg) => !arg.startsWith('--'))
@@ -31,7 +31,14 @@ const settings = {
   relayAccount: privateKeyToAccount(secrets.relayPrivateKey).address,
   customers: config.customers && { maxPerOrganization: config.customers.maxPerOrganization },
 }
-if (!config.starts) log('receipts only: transfer requests stay open until something else starts them')
+if (!config.starts) {
+  log(
+    config.customers
+      ? "receipts only: a customer's transfer request is closed, at one credit to its organization"
+      : 'receipts only: transfer requests stay open until something else starts them',
+  )
+}
+const state = createRelayState()
 
 let stopping = false
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
@@ -43,8 +50,10 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
 
 while (true) {
   try {
-    const pass = await runOnce(relay.io, settings)
-    log(`pass: finalized ${pass.finalized}, ${pass.started} started, ${pass.allowlisted} allowlist changes, ${pass.recorded} recorded`)
+    const pass = await runOnce(relay.io, settings, state)
+    log(
+      `pass: finalized ${pass.finalized}, ${pass.started} started, ${pass.allowlisted} allowlist changes, ${pass.recorded} recorded, ${pass.closed} closed`,
+    )
   } catch (error) {
     log(`pass failed: ${(error as Error).message}`)
     if (once) process.exitCode = 1

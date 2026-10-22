@@ -48,6 +48,7 @@ export const relayAbi = parseAbi([
   'function getForwarderAddress() view returns (address)',
   'function owner() view returns (address)',
   'function setRequester(address account, bool allowed)',
+  'function cancelRequest(bytes32 key)',
   'function isRequester(address account) view returns (bool)',
   'event ReceiptRecorded(bytes16 indexed transferId, bytes32 indexed requestId, uint8 status, uint64 totalBytes, uint64 bytesTransferred, uint8 level)',
   'event RoomReceiptRecorded(bytes32 indexed roomKey, bytes32 indexed requestId, string room, string channel, string publication, uint8 status, uint64 fileSizeBytes, bytes32 evidenceSha256, uint8 level)',
@@ -98,7 +99,7 @@ export const createRelayIO = (config: RelayConfig, secrets: RelaySecrets, log: (
       body: body === undefined ? undefined : JSON.stringify(body),
     })
 
-  const chargeReceipt = (subject: ChargeSubject) => ({ chainId: config.chain.chainId, contract, subject })
+  const chargeBody = (subject: ChargeSubject) => ({ chainId: config.chain.chainId, contract, subject })
 
   const io: RelayIO = {
     finalizedBlock: async () => (await publicClient.getBlock({ blockTag: 'finalized' })).number,
@@ -248,6 +249,13 @@ export const createRelayIO = (config: RelayConfig, secrets: RelaySecrets, log: (
       return hash
     },
 
+    cancelRequest: async (key) => {
+      const hash = await walletClient.writeContract({ address: contract, abi: relayAbi, functionName: 'cancelRequest', args: [key] })
+      const receipt = await publicClient.waitForTransactionReceipt({ hash })
+      if (receipt.status !== 'success') throw new Error(`cancelRequest reverted in ${hash}`)
+      return hash
+    },
+
     reportAllowlist: async (requesterId, allowed, txHash) => {
       const response = await registry('POST', `requesters/${encodeURIComponent(requesterId)}/allowlist`, { allowed, txHash })
       if (!response || response.status !== 200) {
@@ -275,12 +283,12 @@ export const createRelayIO = (config: RelayConfig, secrets: RelaySecrets, log: (
     },
 
     reserveCharge: async ({ subject, organizationId, via }) => {
-      const response = await registry('POST', 'charges/reserve', { ...chargeReceipt(subject), organizationId, via })
+      const response = await registry('POST', 'charges/reserve', { ...chargeBody(subject), organizationId, via })
       return response ? projectCharge(response.status, response.body) : { state: 'unavailable', status: 0 }
     },
 
     commitCharge: async (subject) => {
-      const response = await registry('POST', 'charges/commit', chargeReceipt(subject))
+      const response = await registry('POST', 'charges/commit', chargeBody(subject))
       return response ? projectCharge(response.status, response.body) : { state: 'unavailable', status: 0 }
     },
 

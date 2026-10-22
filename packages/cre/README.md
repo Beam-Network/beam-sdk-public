@@ -415,7 +415,8 @@ a chain, `relay/` does the work of both workflows from one process.
 - **Receipts only.** With `starts: false` in the config, the relay skips the start pass and
   needs no Studio. Contracts then ask for receipts of transfers and Room deliveries that
   already happened (`requestReceipt`, `requestRoomReceipt`). Transfer requests stay open
-  until something else starts them, and `signDeliveries` must be false.
+  until something else starts them, and `signDeliveries` must be false. Customers mode is
+  always receipts only, and closes a customer's transfer request instead (see below).
 - **Trust.** A relay is one operator, so its receipts are Beam-reported only. Deploy the
   contract with `donAttested` false and the relay's account as the forwarder. Readers
   see the difference in `level`, and `donAttested()` says which deployment it is.
@@ -481,7 +482,7 @@ Then, for receipts:
   - A request the relay's own account opened is Beam's: it is read with `BEAM_API_KEY` and
     never charged.
   - A request from an approved address is read with its organization's key and charged to it.
-  - Any other address's request stays open.
+  - A request from an address no organization registered stays open.
 - **Every transfer.** The relay lists each organization's finished transfers
   (`GET /transfers?order_by=completed_at`) after a per-organization cursor in
   `customers.cursorPath`. It keeps those created inside one of the organization's periods and
@@ -495,6 +496,19 @@ Then, for receipts:
   - A failed write keeps the hold, and the next pass writes again.
   - A receipt the contract already holds is committed too: it is onchain.
   - An already committed charge is never written again.
+- **Requests it will never answer.** The relay closes them with `cancelRequest`, at one
+  credit to the organization whose address opened each, so Beam pays no gas it is not paid for:
+  - a customer's `requestTransfer`, since customers mode is receipts only (`starts` must be false);
+  - a request from an address the organization or Beam revoked, charged to the organization
+    that registered it;
+  - a receipt request whose transfer or publication the organization's key still cannot see
+    an hour after it was opened.
+
+  The credit is held before the cancel is sent, and a refused charge sends nothing: the
+  request stays open. The charge commits once the cancel is mined. A cancel that fails is
+  sent again under the same hold while the request is open; a commit that fails is retried
+  from memory on later passes. A requester can cancel its own request first
+  (`cancelRequest(key)`), paying only its own gas.
 
 To set it up:
 1. Run `bun run sealing-key /opt/beam-relay/relay.env`. It appends the private key to the

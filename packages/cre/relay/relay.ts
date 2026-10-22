@@ -14,6 +14,7 @@ import {
   nextTransferCursor,
   type Owner,
   type Reader,
+  type ReceiptSubject,
   type Via,
 } from './customers'
 import {
@@ -65,6 +66,8 @@ export type RelayIO = {
   customers(): Promise<Customer[]>
   /** `setRequester` on the receipts contract (owner only), waited until mined; returns the transaction hash. */
   setRequester(address: Address, allowed: boolean): Promise<Hex>
+  /** `cancelRequest` on the receipts contract (owner or requester), waited until mined; returns the transaction hash. */
+  cancelRequest(key: Hex): Promise<Hex>
   reportAllowlist(requesterId: string, allowed: boolean, txHash: Hex): Promise<void>
   /** A customer's finished transfers completed after `completedAfter`, read with its key. */
   finishedTransfers(reader: Exclude<Reader, null>, completedAfter: string): Promise<ListedTransfer[]>
@@ -90,11 +93,25 @@ export type RelaySettings = {
   customers: { maxPerOrganization: number } | null
 }
 
+/** What the relay keeps between passes, in memory only. */
+export type RelayState = {
+  /** Requests closed whose charge did not commit yet, by request key, with the organization charged. */
+  uncommittedCloses: Map<Hex, string>
+}
+
+export const createRelayState = (): RelayState => ({ uncommittedCloses: new Map() })
+
 /**
  * Entries per report, at most one subject each. The contract's gas test covers 14 of each kind, the CRE
  * workflow's per-execution maximum; the relay keeps the same bound.
  */
 export const MAX_ENTRIES_PER_REPORT = 14
+
+/**
+ * How long a customer's receipt request may name a transfer or publication its key cannot see before the relay
+ * closes it: long enough for a new one to become visible, shorter than the website's two-hour open-request alert.
+ */
+export const ABSENT_GRACE_MS = 60 * 60 * 1000
 
 /**
  * Starts: delivers every `TransferRequested` log up to the finalized block to Studio, in order: standard
@@ -149,18 +166,21 @@ export const runStarts = async (io: RelayIO, settings: RelaySettings, finalized:
 
 
 /** The key a recorded receipt goes by: a standard receipt by its transfer, a Room receipt by its Room key. */
-export const recordedKey = (subject: ChargeSubject): string =>
+export const recordedKey = (subject: ReceiptSubject): string =>
   subject.kind === 'transfer' ? `transfer:${subject.transferId.toLowerCase()}` : `room:${subject.roomKey.toLowerCase()}`
 
 /** The receipt a report entry records, when it records one: closures and job results are never charged. */
-const chargeSubjectOf = (entry: ReportEntry): ChargeSubject | null => {
+const chargeSubjectOf = (entry: ReportEntry): ReceiptSubject | null => {
   if (entry.kind === 'standard') return { kind: 'transfer', transferId: bytes16ToTransferId(entry.entry.transferId) }
   if (entry.kind === 'room') return { kind: 'room', roomKey: roomReceiptKey(entry.entry.room, entry.entry.channel, entry.entry.publication) }
   return null
 }
 
-type Pending = { subject: Subject; owner: Owner; observation?: Observation }
+/** `request`: the open request a customer asked with, so it can be closed if it can never be answered. */
+type Pending = { subject: Subject; owner: Owner; observation?: Observation; request?: OpenRequest }
 type Planned = { entry: ReportEntry; owner: Owner; key: string }
+/** An open request this relay will never answer, and the organization whose address opened it. */
+type Unanswerable = { request: OpenRequest; organizationId: string; reason: string }
 
 const readerOf = (owner: Owner): Reader => (owner.kind === 'customer' ? owner.reader : null)
 
@@ -198,11 +218,24 @@ export const syncAllowlist = async (io: RelayIO, customers: Customer[]): Promise
  * held before the report is written, committed once it is mined. A refused charge leaves the request open, and a
  * listed transfer is listed again. A failed write keeps its holds; the next pass finds them and writes again, and a
  * receipt the contract already holds is committed too, since it is onchain.
+ *
+ * It also returns the customers' open requests it will never answer, for `closeUnanswerable`: a request to start a
+ * transfer (customers mode is receipts only), a request from an address its organization no longer has approved,
+ * and a receipt request whose transfer or publication the organization's key has not seen for `ABSENT_GRACE_MS`.
  */
-export const runReceipts = async (io: RelayIO, settings: RelaySettings, customers: Customer[], now = Date.now()): Promise<number> => {
-  const byRequester = new Map<string, Customer>()
+export const runReceipts = async (
+  io: RelayIO,
+  settings: RelaySettings,
+  customers: Customer[],
+  now = Date.now(),
+): Promise<{ recorded: number; unanswerable: Unanswerable[] }> => {
+  const approvedBy = new Map<string, Customer>()
+  const revokedBy = new Map<string, Customer>()
   for (const customer of customers) {
-    for (const requester of customer.requesters) if (requester.status === 'APPROVED') byRequester.set(requester.address, customer)
+    for (const requester of customer.requesters) {
+      if (requester.status === 'APPROVED') approvedBy.set(requester.address, customer)
+      if (requester.status === 'REVOKED') revokedBy.set(requester.address, customer)
+    }
   }
 
   const pending = new Map<string, Pending>()
@@ -212,23 +245,38 @@ export const runReceipts = async (io: RelayIO, settings: RelaySettings, customer
     if (!existing || (!existing.subject.requestId && item.subject.requestId)) pending.set(key, item)
   }
 
+  const unanswerable: Unanswerable[] = []
   let strangers = 0
   for (const request of await io.openRequests()) {
     const requester = request.requester.toLowerCase()
     let owner: Owner = { kind: 'beam' }
     if (settings.customers && requester !== settings.relayAccount.toLowerCase()) {
-      const customer = byRequester.get(requester)
-      // A customer asks for receipts; it never starts transfers through this relay.
-      if (!customer || request.kind === RequestKind.Transfer) {
+      const customer = approvedBy.get(requester)
+      const revoked = customer ? undefined : revokedBy.get(requester)
+      if (revoked) {
+        unanswerable.push({ request, organizationId: revoked.organizationId, reason: 'its address is no longer approved' })
+        continue
+      }
+      if (!customer) {
         strangers += 1
+        continue
+      }
+      if (request.kind === RequestKind.Transfer) {
+        unanswerable.push({ request, organizationId: customer.organizationId, reason: 'it asks to start a transfer, which this relay never does' })
         continue
       }
       owner = { kind: 'customer', organizationId: customer.organizationId, reader: customer.reader, via: { kind: 'requester', address: request.requester } }
     }
     const subject = subjectForOpenRequest(settings.clientId, settings.routes, request)
-    if (subject) add({ subject, owner })
+    if (subject) add({ subject, owner, request: owner.kind === 'customer' ? request : undefined })
   }
-  if (strangers) io.log(`receipt: ${strangers} open requests stay open: from no approved organization's address, or asking to start a transfer`)
+  if (strangers) io.log(`receipt: ${strangers} open requests stay open: from an address no organization registered`)
+
+  // A customer's request for something its key cannot see, once given time to appear.
+  const unseen = ({ owner, request, subject }: Pending) => {
+    if (owner.kind !== 'customer' || !request || now - Number(request.openedAt) * 1000 < ABSENT_GRACE_MS) return
+    unanswerable.push({ request, organizationId: owner.organizationId, reason: `its key cannot see ${subjectKey(subject)}` })
+  }
 
   // Every transfer: what each organization finished since its cursor, created while its switch was on.
   const cursors = settings.customers ? await io.readTransferCursors() : {}
@@ -266,7 +314,8 @@ export const runReceipts = async (io: RelayIO, settings: RelaySettings, customer
   // Look up what is finished, and hold each customer receipt's credit before writing it.
   const planned: Planned[] = []
   const settled = new Set<string>()
-  for (const { subject: requested, owner, observation: listedObservation } of pending.values()) {
+  for (const item of pending.values()) {
+    const { subject: requested, owner, observation: listedObservation } = item
     const reader = readerOf(owner)
     if (requested.kind === 'job') {
       const lookups = jobLookups(requested)
@@ -287,7 +336,8 @@ export const runReceipts = async (io: RelayIO, settings: RelaySettings, customer
       const lookup = await io.findPublication(requested, reader)
       const found = roomSubjectForLookup(requested, lookup)
       if (!found) {
-        if (lookup.state !== 'absent') io.log(`receipt: ${subjectKey(requested)} not recorded: ${describePublicationLookup(lookup)}`)
+        if (lookup.state === 'absent') unseen(item)
+        else io.log(`receipt: ${subjectKey(requested)} not recorded: ${describePublicationLookup(lookup)}`)
         continue
       }
       subject = found
@@ -297,7 +347,8 @@ export const runReceipts = async (io: RelayIO, settings: RelaySettings, customer
     const observation = listedObservation ?? (await io.observe(subject, reader))
     const entry = reportEntryFor(subject, observation, settings.levels)
     if (!entry) {
-      if (observation.state !== 'pending' && observation.state !== 'absent') {
+      if (observation.state === 'absent') unseen(item)
+      else if (observation.state !== 'pending') {
         io.log(`receipt: ${subjectKey(subject)} not recorded: ${describeObservation(observation)}`)
         // A listed transfer that can never be recorded is done with.
         if (listedObservation) settled.add(subjectKey(subject))
@@ -364,18 +415,67 @@ export const runReceipts = async (io: RelayIO, settings: RelaySettings, customer
     }
     await io.saveTransferCursors(cursors)
   }
-  return recorded
+  return { recorded, unanswerable }
+}
+
+/**
+ * Customers mode: closes the open requests this relay will never answer, each at one credit to the organization
+ * whose address opened it, so Beam pays no gas an organization does not pay for. The credit is held first, and
+ * `cancelRequest` is sent only with the hold; a refused charge sends nothing and the request stays open. The charge
+ * commits once the cancel is mined. A cancel that fails or reverts (the request was answered or closed meanwhile)
+ * is not committed: a request still open is tried again with the same hold, and otherwise the hold expires. A
+ * commit that fails is retried on later passes from `state`.
+ */
+export const closeUnanswerable = async (io: RelayIO, unanswerable: Unanswerable[], state: RelayState): Promise<number> => {
+  for (const [requestKey, organizationId] of state.uncommittedCloses) {
+    const committed = await io.commitCharge({ kind: 'request', requestKey })
+    if (committed.state === 'unavailable') continue
+    state.uncommittedCloses.delete(requestKey)
+    if (committed.state !== 'charged') io.log(`close: the charge for ${requestKey} to ${organizationId} did not commit (${committed.state})`)
+  }
+
+  let closed = 0
+  const seen = new Set<Hex>()
+  for (const { request, organizationId, reason } of unanswerable) {
+    if (seen.has(request.key)) continue
+    seen.add(request.key)
+    const subject: ChargeSubject = { kind: 'request', requestKey: request.key }
+    const held = await io.reserveCharge({ subject, organizationId, via: { kind: 'requester', address: request.requester } })
+    if (held.state !== 'held') {
+      const detail = held.state === 'refused' ? `: ${held.reason}` : held.state === 'unavailable' ? ` (HTTP ${held.status})` : ''
+      io.log(`close: ${request.key} from ${request.requester} stays open (${reason}); charge ${held.state}${detail}`)
+      continue
+    }
+    let hash: Hex
+    try {
+      hash = await io.cancelRequest(request.key)
+    } catch (error) {
+      io.log(`close: cancelling ${request.key} failed, its charge is not committed: ${(error as Error).message}`)
+      continue
+    }
+    closed += 1
+    const committed = await io.commitCharge(subject)
+    if (committed.state === 'charged') {
+      io.log(`close: cancelled ${request.key} from ${request.requester} (${reason}) in ${hash}; charged ${organizationId} one credit`)
+    } else {
+      state.uncommittedCloses.set(request.key, organizationId)
+      io.log(`close: cancelled ${request.key} in ${hash}; committing its charge failed (${committed.state}), the next pass retries`)
+    }
+  }
+  return closed
 }
 
 /**
  * One relay pass: starts up to the finalized block when the relay starts transfers; in customers mode, the
- * allowlist; then receipts for whatever is open or owed.
+ * allowlist; then receipts for whatever is open or owed; then, in customers mode, closes what will never be
+ * answered.
  */
-export const runOnce = async (io: RelayIO, settings: RelaySettings) => {
+export const runOnce = async (io: RelayIO, settings: RelaySettings, state: RelayState) => {
   const finalized = await io.finalizedBlock()
   const started = settings.starts ? await runStarts(io, settings, finalized) : 0
   const customers = settings.customers ? await io.customers() : []
   const allowlisted = settings.customers ? await syncAllowlist(io, customers) : 0
-  const recorded = await runReceipts(io, settings, customers)
-  return { finalized, started, allowlisted, recorded }
+  const { recorded, unanswerable } = await runReceipts(io, settings, customers)
+  const closed = settings.customers ? await closeUnanswerable(io, unanswerable, state) : 0
+  return { finalized, started, allowlisted, recorded, closed }
 }
