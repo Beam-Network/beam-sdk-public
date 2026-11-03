@@ -1,12 +1,25 @@
 import { hmac } from '@noble/hashes/hmac.js'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js'
-import { type Address, type Hex, parseAbi, toEventSelector } from 'viem'
+import { type Address, type Hex, toEventSelector } from 'viem'
 
-/** The `BeamTransferReceipts` event this workflow starts transfers from. */
-export const requestsAbi = parseAbi([
-  'event TransferRequested(bytes32 indexed requestId, address indexed requester, uint8 kind, string input)',
-])
+/**
+ * The `BeamTransferReceipts` event this workflow starts transfers from. JSON, never viem's human-readable
+ * strings: its parser recurses once per character, which exhausts the WASM stack on a CRE DON. `check.ts`
+ * compares it with viem's parse of the Solidity signature.
+ */
+export const requestsAbi = [
+  {
+    name: 'TransferRequested',
+    type: 'event',
+    inputs: [
+      { type: 'bytes32', name: 'requestId', indexed: true },
+      { type: 'address', name: 'requester', indexed: true },
+      { type: 'uint8', name: 'kind' },
+      { type: 'string', name: 'input' },
+    ],
+  },
+] as const
 
 export const TRANSFER_REQUESTED_TOPIC = toEventSelector('TransferRequested(bytes32,address,uint8,string)')
 

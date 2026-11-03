@@ -1,9 +1,11 @@
 // Offline checks for the workflow's pure functions. Run with `bun run check`; not part of the workflow bundle.
 import { createHmac } from 'node:crypto'
 import { readFileSync } from 'node:fs'
+import { parseAbi } from 'viem'
 import {
   normalizeRequestId,
   projectStudioResponse,
+  requestsAbi,
   TRANSFER_REQUESTED_TOPIC,
   toBase64,
   webhookBody,
@@ -20,6 +22,12 @@ const check = (name: string, actual: unknown, expected: unknown) => {
   }
   console.log(`ok   ${name}: ${a}`)
 }
+
+check(
+  'requestsAbi matches its Solidity signature',
+  requestsAbi,
+  parseAbi(['event TransferRequested(bytes32 indexed requestId, address indexed requester, uint8 kind, string input)']),
+)
 
 const bytes = (value: unknown) => new TextEncoder().encode(typeof value === 'string' ? value : JSON.stringify(value))
 const failure = (run: () => unknown): string => {

@@ -8,3 +8,9 @@ evm_version = "cancun"
 optimizer = true
 optimizer_runs = 200
 remappings = ["@openzeppelin/contracts/=src/vendor/openzeppelin/"]
+
+# Kept small so `forge test` stays fast; run deeper with
+# FOUNDRY_INVARIANT_RUNS=1000 FOUNDRY_INVARIANT_DEPTH=100 forge test.
+[invariant]
+runs = 32
+depth = 200

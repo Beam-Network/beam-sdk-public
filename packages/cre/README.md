@@ -716,6 +716,7 @@ Bun also loads `.env` from the working directory, which git ignores.
 | HTTP trigger rate | 1 per 30 s | batch receipts into one push; the bridge calls at most once per `paceSeconds` |
 | Log trigger rate | 10 per 6 s | one request per log |
 | Workflows per organization (private registry) | 3 | `transfer-receipts` and `start-transfer` are two |
+| WASM stack | smaller on a DON than in the simulator | ABIs are JSON constants: viem's human-readable ABI parser recurses once per character, and a long signature exhausts the stack when the workflow starts on a DON, although it runs in the simulator |
 
 **Reconcile capacity is about 14 transfers per run: 168 per hour at the default 5 minutes.**
 The window advances by `reconcileBatchSize` each run and wraps around the set, so every
@@ -744,6 +745,13 @@ cd ../../contracts/evm
 forge build
 forge test
 ```
+
+`forge test` runs the example tests, fuzz tests for every input bound and access rule, and two
+invariant suites, one per deployment kind (CRE and relay). The invariant suites drive random
+requests, cancels and reports, and check that the open-request set stays consistent, answered
+requests are never open, recorded receipts never change, and levels match the deployment.
+`foundry.toml` keeps them short. Run them deeper with
+`FOUNDRY_FUZZ_RUNS=10000 FOUNDRY_INVARIANT_RUNS=1000 FOUNDRY_INVARIANT_DEPTH=100 forge test`.
 
 Dependencies are pinned to exact versions, and `bun.lock` is committed.
 
@@ -837,7 +845,10 @@ simulation does not. Before deploying:
 3. Allow requesters with `setRequester`.
 4. Store the secrets in the Vault DON: `cre secrets create secrets.yaml --target production-settings`,
    and for `start-transfer` also `cre secrets create workflows/start-transfer/secrets.yaml --target production-settings`.
-5. Fill `httpTriggerAuthorizedKeys`; a deployed HTTP trigger refuses requests without them.
+5. List at least one address in `httpTriggerAuthorizedKeys`, even if nothing will push receipts: a DON
+   refuses to start a workflow whose HTTP trigger has no authorized key. The simulator does not check this.
+6. Use `https://` for `beamApiBaseUrl` and `roomApiBaseUrl`. A DON blocks plain `http` requests
+   (`scheme: http not found in allowlist`), although the simulator sends them.
 
 ```bash
 cre workflow deploy workflows/transfer-receipts --target production-settings
@@ -925,7 +936,8 @@ packages/cre/
 │   ├── foundry.toml
 │   ├── src/BeamTransferReceipts.sol
 │   ├── src/vendor/
-│   └── test/BeamTransferReceipts.t.sol
+│   ├── test/BeamTransferReceipts.t.sol       example tests
+│   └── test/BeamTransferReceipts.fuzz.t.sol  fuzz tests and invariant suites
 ├── workflows/transfer-receipts/
 │   ├── workflow.yaml               targets, config and secrets paths
 │   ├── config.staging.json         Beam DEV, Sepolia

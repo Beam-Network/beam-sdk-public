@@ -1,6 +1,6 @@
 // Offline checks for the workflow's pure functions. Run with `bun run check`; not part of the workflow bundle.
 import { createHash } from 'node:crypto'
-import { keccak256, zeroAddress } from 'viem'
+import { keccak256, parseAbi, parseAbiParameters, zeroAddress } from 'viem'
 import { answerFor, attestationSubject, MAX_ATTESTATIONS, reportSubmission } from './attestations'
 import { projectPublicationLookup, projectRoomReceipt, projectTransfer, ZERO_BYTES32 } from './beam'
 import {
@@ -10,6 +10,8 @@ import {
   Level,
   RequestKind,
   receiptLevels,
+  receiptsAbi,
+  reportParameters,
   roomReceiptKey,
   roomRequestKey,
   TransferKind,
@@ -51,6 +53,24 @@ export const CLIENT_ID = '11111111-2222-4333-8444-555555555555'
 export const REQUEST_ID = '0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
 export const TRANSFER_ID = '0e4c57f8-7e67-5852-95f5-418bba42563d'
 
+check(
+  'receiptsAbi matches its Solidity signatures',
+  receiptsAbi,
+  parseAbi([
+    'struct OpenRequest { bytes32 key; uint8 kind; uint8 transferKind; address requester; uint64 openedAt; bytes32 requestId; bytes16 transferId; string room; string channel; string publication; }',
+    'function openRequestCount() view returns (uint256)',
+    'function openRequests(uint256 offset, uint256 limit) view returns (OpenRequest[] page)',
+    'event ReceiptRequested(bytes16 indexed transferId, address indexed requester)',
+    'event RoomReceiptRequested(bytes32 indexed roomKey, address indexed requester, string room, string channel, string publication)',
+  ]),
+)
+check(
+  'reportParameters match the report signature',
+  reportParameters,
+  parseAbiParameters(
+    'uint8 version, (bytes16 transferId, bytes32 requestId, uint8 status, uint64 totalBytes, uint64 bytesTransferred, uint64 completedAtMs, bytes32 planFingerprint, bytes32 coordinateChecksum, uint8 level)[] standard, (string room, string channel, string publication, bytes32 requestId, uint8 status, uint64 fileSizeBytes, bytes32 manifestSha256, uint32 targetCount, bytes32 evidenceSha256, bytes32 assignmentsSha256, uint16 evidenceVersion, uint8 level)[] rooms, (bytes32 key, uint8 reason, bytes16 transferId)[] closures, (bytes32 requestId, bytes32 inputRoomKey, bytes32 outputRoomKey, string computeMember)[] jobs',
+  ),
+)
 check('transferId vector', transferIdForRequest(CLIENT_ID, REQUEST_ID), TRANSFER_ID)
 check('transferId matches the SDK formula', transferIdForRequest(CLIENT_ID, REQUEST_ID), sdkTransferId(CLIENT_ID, REQUEST_ID))
 for (const [clientId, requestId] of [

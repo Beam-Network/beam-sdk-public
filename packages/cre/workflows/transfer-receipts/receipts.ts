@@ -1,21 +1,59 @@
-import {
-  decodeAbiParameters,
-  encodeAbiParameters,
-  type Hex,
-  keccak256,
-  parseAbi,
-  parseAbiParameters,
-  toEventSelector,
-} from 'viem'
+import { decodeAbiParameters, encodeAbiParameters, type Hex, keccak256, toEventSelector } from 'viem'
+
+// ABIs here are JSON, never viem's human-readable strings: its parser recurses once per character,
+// which exhausts the WASM stack on a CRE DON (the simulator's stack is larger). `check.ts` compares
+// each one with viem's parse of its Solidity signature.
 
 /** The parts of `BeamTransferReceipts` the workflow reads, and the request events it listens to. */
-export const receiptsAbi = parseAbi([
-  'struct OpenRequest { bytes32 key; uint8 kind; uint8 transferKind; address requester; uint64 openedAt; bytes32 requestId; bytes16 transferId; string room; string channel; string publication; }',
-  'function openRequestCount() view returns (uint256)',
-  'function openRequests(uint256 offset, uint256 limit) view returns (OpenRequest[] page)',
-  'event ReceiptRequested(bytes16 indexed transferId, address indexed requester)',
-  'event RoomReceiptRequested(bytes32 indexed roomKey, address indexed requester, string room, string channel, string publication)',
-])
+export const receiptsAbi = [
+  { name: 'openRequestCount', type: 'function', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
+  {
+    name: 'openRequests',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [
+      { type: 'uint256', name: 'offset' },
+      { type: 'uint256', name: 'limit' },
+    ],
+    outputs: [
+      {
+        type: 'tuple[]',
+        name: 'page',
+        components: [
+          { type: 'bytes32', name: 'key' },
+          { type: 'uint8', name: 'kind' },
+          { type: 'uint8', name: 'transferKind' },
+          { type: 'address', name: 'requester' },
+          { type: 'uint64', name: 'openedAt' },
+          { type: 'bytes32', name: 'requestId' },
+          { type: 'bytes16', name: 'transferId' },
+          { type: 'string', name: 'room' },
+          { type: 'string', name: 'channel' },
+          { type: 'string', name: 'publication' },
+        ],
+      },
+    ],
+  },
+  {
+    name: 'ReceiptRequested',
+    type: 'event',
+    inputs: [
+      { type: 'bytes16', name: 'transferId', indexed: true },
+      { type: 'address', name: 'requester', indexed: true },
+    ],
+  },
+  {
+    name: 'RoomReceiptRequested',
+    type: 'event',
+    inputs: [
+      { type: 'bytes32', name: 'roomKey', indexed: true },
+      { type: 'address', name: 'requester', indexed: true },
+      { type: 'string', name: 'room' },
+      { type: 'string', name: 'channel' },
+      { type: 'string', name: 'publication' },
+    ],
+  },
+] as const
 
 export const RECEIPT_REQUESTED_TOPIC = toEventSelector('ReceiptRequested(bytes16,address)')
 export const ROOM_RECEIPT_REQUESTED_TOPIC = toEventSelector(
@@ -100,15 +138,68 @@ export type JobResultEntry = {
 
 /** `BeamTransferReceipts.roomReceiptKey`. */
 export const roomReceiptKey = (room: string, channel: string, publication: string): Hex =>
-  keccak256(encodeAbiParameters(parseAbiParameters('string, string, string'), [room, channel, publication]))
+  keccak256(encodeAbiParameters([{ type: 'string' }, { type: 'string' }, { type: 'string' }], [room, channel, publication]))
 
 /** `BeamTransferReceipts.roomRequestKey`: the open-request key of a `requestRoomReceipt`. */
 export const roomRequestKey = (roomKey: Hex): Hex =>
-  keccak256(encodeAbiParameters(parseAbiParameters('uint8, bytes32'), [RequestKind.RoomReceipt, roomKey]))
+  keccak256(encodeAbiParameters([{ type: 'uint8' }, { type: 'bytes32' }], [RequestKind.RoomReceipt, roomKey]))
 
-const reportParameters = parseAbiParameters(
-  'uint8 version, (bytes16 transferId, bytes32 requestId, uint8 status, uint64 totalBytes, uint64 bytesTransferred, uint64 completedAtMs, bytes32 planFingerprint, bytes32 coordinateChecksum, uint8 level)[] standard, (string room, string channel, string publication, bytes32 requestId, uint8 status, uint64 fileSizeBytes, bytes32 manifestSha256, uint32 targetCount, bytes32 evidenceSha256, bytes32 assignmentsSha256, uint16 evidenceVersion, uint8 level)[] rooms, (bytes32 key, uint8 reason, bytes16 transferId)[] closures, (bytes32 requestId, bytes32 inputRoomKey, bytes32 outputRoomKey, string computeMember)[] jobs',
-)
+/** The report's parameters, `_processReport`'s `abi.decode` types. */
+export const reportParameters = [
+  { type: 'uint8', name: 'version' },
+  {
+    type: 'tuple[]',
+    name: 'standard',
+    components: [
+      { type: 'bytes16', name: 'transferId' },
+      { type: 'bytes32', name: 'requestId' },
+      { type: 'uint8', name: 'status' },
+      { type: 'uint64', name: 'totalBytes' },
+      { type: 'uint64', name: 'bytesTransferred' },
+      { type: 'uint64', name: 'completedAtMs' },
+      { type: 'bytes32', name: 'planFingerprint' },
+      { type: 'bytes32', name: 'coordinateChecksum' },
+      { type: 'uint8', name: 'level' },
+    ],
+  },
+  {
+    type: 'tuple[]',
+    name: 'rooms',
+    components: [
+      { type: 'string', name: 'room' },
+      { type: 'string', name: 'channel' },
+      { type: 'string', name: 'publication' },
+      { type: 'bytes32', name: 'requestId' },
+      { type: 'uint8', name: 'status' },
+      { type: 'uint64', name: 'fileSizeBytes' },
+      { type: 'bytes32', name: 'manifestSha256' },
+      { type: 'uint32', name: 'targetCount' },
+      { type: 'bytes32', name: 'evidenceSha256' },
+      { type: 'bytes32', name: 'assignmentsSha256' },
+      { type: 'uint16', name: 'evidenceVersion' },
+      { type: 'uint8', name: 'level' },
+    ],
+  },
+  {
+    type: 'tuple[]',
+    name: 'closures',
+    components: [
+      { type: 'bytes32', name: 'key' },
+      { type: 'uint8', name: 'reason' },
+      { type: 'bytes16', name: 'transferId' },
+    ],
+  },
+  {
+    type: 'tuple[]',
+    name: 'jobs',
+    components: [
+      { type: 'bytes32', name: 'requestId' },
+      { type: 'bytes32', name: 'inputRoomKey' },
+      { type: 'bytes32', name: 'outputRoomKey' },
+      { type: 'string', name: 'computeMember' },
+    ],
+  },
+] as const
 
 /** The version 2 report `BeamTransferReceipts._processReport` decodes. */
 export const encodeReport = (
