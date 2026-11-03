@@ -244,19 +244,17 @@ check(
   null,
 )
 
+/** A `GET /transfers/:id/receipt` body. */
 const transferBody = (status: string) =>
   new TextEncoder().encode(
     JSON.stringify({
       id: TRANSFER_ID,
-      transfer_key: 'server-issued',
       status,
       total_bytes: 1073741824,
       bytes_transferred: 1073741824,
-      error_message: null,
-      metadata: { plan_fingerprint: 'aa'.repeat(32), coordinate_checksum: 'bb'.repeat(32) },
-      created_at: '2026-10-09T08:53:00.000Z',
-      started_at: '2026-10-09T08:53:05.000Z',
       completed_at: '2026-10-09T08:53:20.000Z',
+      plan_fingerprint: 'aa'.repeat(32),
+      coordinate_checksum: 'bb'.repeat(32),
     }),
   )
 check('standard transfer projection', projectTransfer(200, transferBody('completed'), TRANSFER_ID), {

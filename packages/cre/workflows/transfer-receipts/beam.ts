@@ -48,7 +48,7 @@ const DECIMAL = /^(0|[1-9][0-9]*)$/
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/
 
-/** Statuses of a finished standard transfer, as `GET /transfers/:id` reports them. */
+/** Statuses of a finished standard transfer, as `GET /transfers/:id/receipt` reports them. */
 const STANDARD_TERMINAL = new Map<string, ReceiptStatusCode>([
   ['completed', ReceiptStatus.Completed],
   ['failed', ReceiptStatus.Failed],
@@ -145,7 +145,6 @@ export const projectTransfer = (statusCode: number, body: Uint8Array, transferId
   if (totalBytes === null || bytesTransferred === null) return invalid('byte counts are not safe integers')
   const completedAtMs = timestampMs(transfer.completed_at)
   if (completedAtMs === null) return invalid('completed_at is not an ISO 8601 timestamp')
-  const metadata = isRecord(transfer.metadata) ? transfer.metadata : {}
 
   return {
     state: 'transfer',
@@ -153,8 +152,8 @@ export const projectTransfer = (statusCode: number, body: Uint8Array, transferId
     totalBytes,
     bytesTransferred,
     completedAtMs,
-    planFingerprint: sha256HexOrZero(metadata.plan_fingerprint),
-    coordinateChecksum: sha256HexOrZero(metadata.coordinate_checksum),
+    planFingerprint: sha256HexOrZero(transfer.plan_fingerprint),
+    coordinateChecksum: sha256HexOrZero(transfer.coordinate_checksum),
   }
 }
 

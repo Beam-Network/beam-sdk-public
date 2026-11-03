@@ -77,15 +77,33 @@ export type ListedTransfer = { id: string; createdAt: string; completedAt: strin
 
 const listedSchema = z.object({ id: z.string(), created_at: isoDate, completed_at: isoDate })
 
-/** Reads one listed row exactly as a single `GET /transfers/:id` would be read. */
+/**
+ * A listed row (the full record) as `GET /transfers/:id/receipt` answers for the same transfer: the receipt fields,
+ * with the two hashes taken out of its metadata.
+ */
+export const listedReceipt = (row: Record<string, unknown>): Record<string, unknown> => {
+  const metadata = row.metadata && typeof row.metadata === 'object' ? (row.metadata as Record<string, unknown>) : {}
+  return {
+    id: row.id,
+    status: row.status,
+    total_bytes: row.total_bytes,
+    bytes_transferred: row.bytes_transferred,
+    completed_at: row.completed_at,
+    plan_fingerprint: metadata.plan_fingerprint ?? null,
+    coordinate_checksum: metadata.coordinate_checksum ?? null,
+  }
+}
+
+/** Reads one listed row exactly as a single `GET /transfers/:id/receipt` would be read. */
 export const projectListedTransfer = (row: unknown): ListedTransfer | null => {
   const parsed = listedSchema.safeParse(row)
   if (!parsed.success) return null
+  const receipt = listedReceipt(row as Record<string, unknown>)
   return {
     id: parsed.data.id,
     createdAt: parsed.data.created_at,
     completedAt: parsed.data.completed_at,
-    observation: projectTransfer(200, new TextEncoder().encode(JSON.stringify(row)), parsed.data.id),
+    observation: projectTransfer(200, new TextEncoder().encode(JSON.stringify(receipt)), parsed.data.id),
   }
 }
 

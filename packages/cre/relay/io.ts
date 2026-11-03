@@ -172,7 +172,7 @@ export const createRelayIO = (config: RelayConfig, secrets: RelaySecrets, log: (
     observe: async (subject: Exclude<Subject, RoomRequestSubject | JobSubject>, reader: Reader): Promise<Observation> => {
       const { apiKey, organizationId } = readerKey(reader)
       if (subject.kind === 'transfer') {
-        const response = await fetchBytes(`${config.beamApiBaseUrl}/transfers/${subject.transferId}`, {
+        const response = await fetchBytes(`${config.beamApiBaseUrl}/transfers/${subject.transferId}/receipt`, {
           headers: { accept: 'application/json', 'x-api-key': apiKey },
         })
         return response ? projectTransfer(response.status, response.body, subject.transferId) : { state: 'unavailable' }

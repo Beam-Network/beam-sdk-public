@@ -22,7 +22,7 @@ export const relayConfigSchema = z
         logRangeBlocks: z.number().int().min(1).max(10_000),
       })
       .strict(),
-    /** BeamCore public API, which serves `GET /transfers/:id` and `GET /auth/me`. */
+    /** BeamCore public API, which serves `GET /transfers/:id/receipt` and `GET /auth/me`. */
     beamApiBaseUrl: httpUrl,
     /** Beam coordinator, which serves the Room receipt route. */
     roomApiBaseUrl: httpUrl,

@@ -486,7 +486,7 @@ Then, for receipts:
 - **Every transfer.** The relay lists each organization's finished transfers
   (`GET /transfers?order_by=completed_at`) after a per-organization cursor in
   `customers.cursorPath`. It keeps those created inside one of the organization's periods and
-  records them with no request, at most `maxPerOrganization` per pass. It lists an
+  reads each listed row as `GET /transfers/:id/receipt` would answer for it. It records them with no request, at most `maxPerOrganization` per pass. It lists an
   organization while its switch is on and for 7 days after, for transfers still running.
 - **Charging.** Each customer receipt's credit is held before the report is written
   (`charges/reserve`) and committed once it is mined (`charges/commit`). The website keys the
@@ -717,6 +717,7 @@ Bun also loads `.env` from the working directory, which git ignores.
 | Log trigger rate | 10 per 6 s | one request per log |
 | Workflows per organization (private registry) | 3 | `transfer-receipts` and `start-transfer` are two |
 | WASM stack | smaller on a DON than in the simulator | ABIs are JSON constants: viem's human-readable ABI parser recurses once per character, and a long signature exhausts the stack when the workflow starts on a DON, although it runs in the simulator |
+| HTTP response a node reads | below 115 KB on a DON; the simulator allows 250 KB | a transfer lookup reads `GET /transfers/:id/receipt`, about 340 bytes; the full record of a 100 GB transfer (115 KB) yields no answer on a DON |
 
 **Reconcile capacity is about 14 transfers per run: 168 per hour at the default 5 minutes.**
 The window advances by `reconcileBatchSize` each run and wraps around the set, so every
@@ -857,7 +858,7 @@ cre workflow deploy workflows/start-transfer --target production-settings
 
 ## API key scopes
 
-The workflows, the relay and the bridge's lookups only read. `GET /transfers/:id` needs
+The workflows, the relay and the bridge's lookups only read. `GET /transfers/:id/receipt` needs
 `transfers:read`; `GET /auth/me` needs any valid key; the Room receipt and publication
 lookup routes need `room:objects:read`. Create `BEAM_API_KEY` as an API key (`b1m_…`) on
 the console's **API keys** page, then apply the **"Read-only: transfers + Room evidence"**
@@ -867,7 +868,7 @@ credential (`bm_sa_…`) does not work here: it administers keys and billing thr
 `api.b1m.ai`, and BeamCore accepts only API keys.
 Create it in the organization whose key starts the transfers (the Studio credential): Beam
 attributes every key an organization issues to one identity, so both keys share the
-`beamClientId` that transfer ids derive from, and `GET /transfers/:id` only returns that
+`beamClientId` that transfer ids derive from, and `GET /transfers/:id/receipt` only returns that
 identity's transfers.
 
 - **Where the read-only key works:** Beam DEV and production both accept it. A key without
@@ -878,9 +879,13 @@ identity's transfers.
 
 ## Dependency on Beam
 
-- `GET /transfers/:id` and `GET /auth/me` are live on BeamCore today. `planFingerprint` and
-  `coordinateChecksum` come from the transfer's `metadata` and are zero when Beam reported
-  none.
+- The workflows and the relay read a transfer with `GET /transfers/:id/receipt`, which answers only the
+  seven fields a receipt records (id, status, both byte counts, `completed_at`, `plan_fingerprint` and
+  `coordinate_checksum`), about 340 bytes whatever the transfer's size. `GET /transfers/:id` returns the
+  full record, whose metadata grows with the orchestrators a transfer used (about 115 KB at 100 GB), past
+  what a DON lets one node read. `planFingerprint` and `coordinateChecksum` are zero when Beam reported none.
+- BeamCore must serve `GET /transfers/:id/receipt` on the environment the code reads before a workflow or
+  relay running this code is deployed there. `GET /auth/me` is unchanged.
 - The Room receipt route and the `beam-room-receipt-evidence/v1` spec (envelope, error codes
   and test vector) are described in the [Beam documentation](https://docs.b1m.ai/docs/integrations/chainlink-cre).
   Until that route is deployed, Room lookups fail and Room requests stay open.

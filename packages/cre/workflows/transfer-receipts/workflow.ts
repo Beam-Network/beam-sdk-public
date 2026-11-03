@@ -97,7 +97,7 @@ export const configSchema = z.object({
       }),
     )
     .length(1),
-  /** BeamCore public API, which serves `GET /transfers/:id` and `GET /auth/me`. */
+  /** BeamCore public API, which serves `GET /transfers/:id/receipt` and `GET /auth/me`. */
   beamApiBaseUrl: baseUrl,
   /** Beam coordinator, which serves the Room receipt route. */
   roomApiBaseUrl: baseUrl,

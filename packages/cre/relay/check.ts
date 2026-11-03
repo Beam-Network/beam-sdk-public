@@ -1,7 +1,7 @@
 // Offline checks for the relay's logic against an in-memory chain, Studio and Beam. Run with `bun run check`.
 import type { Address, Hex } from 'viem'
 import type { StudioOutcome } from '../workflows/start-transfer/studio'
-import type { Observation, PublicationLookup } from '../workflows/transfer-receipts/beam'
+import { type Observation, type PublicationLookup, projectTransfer } from '../workflows/transfer-receipts/beam'
 import { decodeReport, Level, receiptLevels, RequestKind, roomReceiptKey, TransferKind } from '../workflows/transfer-receipts/receipts'
 import type { OpenRequest, Subject } from '../workflows/transfer-receipts/subjects'
 import { bytes16ToTransferId, transferIdForRequest } from '../workflows/transfer-receipts/transfer-id'
@@ -13,6 +13,7 @@ import {
   type ListedTransfer,
   nextTransferCursor,
   projectCharge,
+  projectListedTransfer,
   type Via,
 } from './customers'
 import {
@@ -684,3 +685,37 @@ check('with both, they are read', secretsFromEnv({ ...relayEnv, ONCHAIN_RELAY_SE
 check('the registry URL loses its trailing slash', customersConfig.customers?.registryUrl, 'https://api.example.com')
 check('customers mode with starts is refused', relayConfigSchema.safeParse({ ...exampleJson, starts: true, customers: customersConfig.customers }).success, false)
 check('roomReceiptKey and recordedKey agree on a Room receipt', recordedKey({ kind: 'room', roomKey: roomReceiptKey('r', 'c', 'p') }), `room:${roomReceiptKey('r', 'c', 'p').toLowerCase()}`)
+
+// A listed row is the full record; customers mode must project it exactly as `GET /transfers/:id/receipt` would.
+const LISTED_ID = '71031887-3ef2-564d-bfc9-20acdd0f7689'
+const listedRow = {
+  id: LISTED_ID,
+  transfer_key: 'server-issued',
+  status: 'completed',
+  total_bytes: 100000000000,
+  bytes_transferred: 100000000000,
+  error_message: null,
+  metadata: {
+    plan_fingerprint: 'cc'.repeat(32),
+    coordinate_checksum: 'dd'.repeat(32),
+    distribution: { ordered_orchestrator_ids: Array.from({ length: 205 }, (_, index) => `orchestrator-${index}`) },
+  },
+  created_at: '2026-11-03T03:43:44.564Z',
+  started_at: '2026-11-03T03:43:50.764Z',
+  completed_at: '2026-11-03T03:44:45.772Z',
+}
+const receiptBody = {
+  id: LISTED_ID,
+  status: 'completed',
+  total_bytes: 100000000000,
+  bytes_transferred: 100000000000,
+  completed_at: '2026-11-03T03:44:45.772Z',
+  plan_fingerprint: 'cc'.repeat(32),
+  coordinate_checksum: 'dd'.repeat(32),
+}
+check(
+  'a listed row projects exactly as its receipt route would',
+  projectListedTransfer(listedRow)?.observation,
+  projectTransfer(200, new TextEncoder().encode(JSON.stringify(receiptBody)), LISTED_ID),
+)
+check('the listed projection keeps the plan fingerprint', (projectListedTransfer(listedRow)?.observation as { planFingerprint?: string }).planFingerprint, `0x${'cc'.repeat(32)}`)

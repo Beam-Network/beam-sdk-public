@@ -29,11 +29,14 @@ export type PublicationKeyLookup = {
   key: string
 }
 
-/** Runs on each node: `GET /transfers/:id`, projected to the fields a standard receipt records. */
+/**
+ * Runs on each node: `GET /transfers/:id/receipt`, the fields a standard receipt records. The full record's metadata
+ * grows with the orchestrators a transfer used (about 115 KB at 100 GB), past what a DON lets a node read.
+ */
 export const observeTransfer = (sendRequester: HTTPSendRequester, lookup: TransferLookup): string => {
   const response = sendRequester
     .sendRequest({
-      url: `${lookup.baseUrl}/transfers/${lookup.transferId}`,
+      url: `${lookup.baseUrl}/transfers/${lookup.transferId}/receipt`,
       method: 'GET',
       multiHeaders: {
         accept: { values: ['application/json'] },
