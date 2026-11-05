@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"math/rand"
 	"net/url"
 	"strings"
@@ -64,7 +65,8 @@ type sdkAuthResolveResponse struct {
 }
 
 type sdkAuthClaims struct {
-	Exp int64 `json:"exp"`
+	Exp      int64  `json:"exp"`
+	ClientID string `json:"client_id"`
 }
 
 type natsControl struct {
@@ -79,6 +81,7 @@ type natsControl struct {
 	nc                *nats.Conn
 	authToken         string
 	authExpiresAt     int64
+	authClientID      string
 	authRefresh       chan struct{}
 	connectionMu      sync.Mutex
 	authMu            sync.Mutex
@@ -96,6 +99,9 @@ type natsControl struct {
 	signerMu          sync.Mutex
 	recoverySigners   map[*func()]func()
 	signersClosed     bool
+	onWarning         func(Warning)
+	warningMu         sync.Mutex
+	reportedWarnings  map[string]string
 	// requestOverride replaces the NATS request/reply exchange in tests.
 	requestOverride func(ctx context.Context, subject string, data []byte) ([]byte, error)
 }
@@ -156,6 +162,48 @@ type LifecycleRequestError struct {
 
 func (e *LifecycleRequestError) Error() string {
 	return fmt.Sprintf("beam lifecycle request failed (%d): %s", e.Status, e.Body)
+}
+
+type InsufficientCreditsError struct {
+	LifecycleRequestError
+	CreditsRequired  *float64
+	CreditsAvailable *float64
+	Reason           string
+}
+
+func (e *InsufficientCreditsError) Unwrap() error {
+	return &e.LifecycleRequestError
+}
+
+type BillingAccountNotLinkedError struct {
+	LifecycleRequestError
+}
+
+func (e *BillingAccountNotLinkedError) Unwrap() error {
+	return &e.LifecycleRequestError
+}
+
+type APIKeyInvalidError struct {
+	LifecycleRequestError
+}
+
+func (e *APIKeyInvalidError) Unwrap() error {
+	return &e.LifecycleRequestError
+}
+
+type PermissionRequiredError struct {
+	LifecycleRequestError
+	Permission string
+}
+
+func (e *PermissionRequiredError) Unwrap() error {
+	return &e.LifecycleRequestError
+}
+
+type Warning struct {
+	Code    string
+	Message string
+	Detail  map[string]any
 }
 
 type recoveryLease struct {
@@ -453,6 +501,7 @@ func (c *natsControl) requestAttempt(
 		return false, err
 	}
 	c.observeRuntimeEpochs(shardID, decoded)
+	c.reportWarnings(decoded)
 	if ok, _ := decoded["ok"].(bool); ok {
 		if messageType == "runtime.hello" {
 			payload, _ := decoded["payload"].(map[string]any)
@@ -488,7 +537,7 @@ func (c *natsControl) requestAttempt(
 		c.authMu.Unlock()
 		return true, replyErr
 	}
-	return isRetryableLifecycleStatus(replyErr.Status), replyErr
+	return isRetryableLifecycleStatus(replyErr.Status), typedLifecycleError(replyErr, decoded)
 }
 
 // natsRequest performs one request/reply exchange bounded by the request timeout.
@@ -525,6 +574,75 @@ func newLifecycleRequestError(decoded map[string]any) *LifecycleRequestError {
 		message = stringValue(fields["message"])
 	}
 	return &LifecycleRequestError{Status: status, Code: code, Message: message, Body: string(body)}
+}
+
+func typedLifecycleError(base *LifecycleRequestError, decoded map[string]any) error {
+	fields, _ := decoded["error"].(map[string]any)
+	detail, _ := fields["detail"].(map[string]any)
+	switch base.Code {
+	case "insufficient_credits":
+		return &InsufficientCreditsError{
+			LifecycleRequestError: *base,
+			CreditsRequired:       creditAmount(detail["credits_required"]),
+			CreditsAvailable:      creditAmount(detail["credits_available"]),
+			Reason:                stringValue(detail["reason"]),
+		}
+	case "billing_account_not_linked":
+		return &BillingAccountNotLinkedError{LifecycleRequestError: *base}
+	case "api_key_invalid":
+		return &APIKeyInvalidError{LifecycleRequestError: *base}
+	case "permission_required":
+		return &PermissionRequiredError{LifecycleRequestError: *base, Permission: stringValue(detail["permission"])}
+	}
+	return base
+}
+
+func creditAmount(value any) *float64 {
+	var amount float64
+	switch typed := value.(type) {
+	case float64:
+		amount = typed
+	case float32:
+		amount = float64(typed)
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+		amount = float64(intValue(typed))
+	default:
+		return nil
+	}
+	if math.IsNaN(amount) || math.IsInf(amount, 0) {
+		return nil
+	}
+	return &amount
+}
+
+func (c *natsControl) reportWarnings(decoded map[string]any) {
+	if c.onWarning == nil {
+		return
+	}
+	entries, _ := decoded["warnings"].([]any)
+	for _, entry := range entries {
+		fields, _ := entry.(map[string]any)
+		warning := Warning{Code: stringValue(fields["code"]), Message: stringValue(fields["message"])}
+		if warning.Code == "" || warning.Message == "" {
+			continue
+		}
+		warning.Detail, _ = fields["detail"].(map[string]any)
+		c.warningMu.Lock()
+		if c.reportedWarnings == nil {
+			c.reportedWarnings = map[string]string{}
+		}
+		repeated := c.reportedWarnings[warning.Code] == warning.Message
+		c.reportedWarnings[warning.Code] = warning.Message
+		c.warningMu.Unlock()
+		if repeated {
+			continue
+		}
+		handler := c.onWarning
+		go func() {
+			defer func() { _ = recover() }()
+			handler(warning)
+		}()
+	}
 }
 
 func lifecycleRetryDelay(attempt int) time.Duration {
@@ -997,6 +1115,7 @@ func natsConnectOptions(natsURL string, apiKey string, keyPrefix string) []nats.
 	options := []nats.Option{
 		nats.UserInfo(keyPrefix, apiKey),
 		nats.Name("beam-go-sdk-" + keyPrefix),
+		nats.CustomInboxPrefix("_INBOX.c." + keyPrefix),
 		nats.MaxReconnects(sdkMaxReconnects),
 		nats.ReconnectWait(time.Second),
 		nats.ReconnectJitter(500*time.Millisecond, time.Second),
@@ -1037,11 +1156,12 @@ func (c *natsControl) authTokenValue(ctx context.Context) (string, error) {
 		c.authRefresh = refresh
 		c.authMu.Unlock()
 
-		token, expiresAt, err := c.resolveAuthToken(ctx)
+		token, claims, err := c.resolveAuthToken(ctx)
 		c.authMu.Lock()
 		if err == nil {
 			c.authToken = token
-			c.authExpiresAt = expiresAt
+			c.authExpiresAt = claims.Exp
+			c.authClientID = claims.ClientID
 		}
 		c.authRefresh = nil
 		close(refresh)
@@ -1050,12 +1170,26 @@ func (c *natsControl) authTokenValue(ctx context.Context) (string, error) {
 	}
 }
 
-func (c *natsControl) resolveAuthToken(ctx context.Context) (string, int64, error) {
+// clientID returns the client_id claim of the SDK auth token, the identity
+// transfer ids are derived under, resolving the token first when needed.
+func (c *natsControl) clientID(ctx context.Context) (string, error) {
+	if _, err := c.authTokenValue(ctx); err != nil {
+		return "", err
+	}
+	c.authMu.Lock()
+	defer c.authMu.Unlock()
+	if c.authClientID == "" {
+		return "", fmt.Errorf("SDK auth token has no client_id")
+	}
+	return c.authClientID, nil
+}
+
+func (c *natsControl) resolveAuthToken(ctx context.Context) (string, sdkAuthClaims, error) {
 	var reply []byte
 	var lastErr error
 	for attempt := 0; attempt < lifecycleRequestMaxAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {
-			return "", 0, err
+			return "", sdkAuthClaims{}, err
 		}
 		var requestErr error
 		reply, requestErr = c.natsRequest(ctx, c.authSubject(), []byte("{}"))
@@ -1063,30 +1197,30 @@ func (c *natsControl) resolveAuthToken(ctx context.Context) (string, int64, erro
 			break
 		}
 		if !isRetryableNATSError(requestErr) {
-			return "", 0, requestErr
+			return "", sdkAuthClaims{}, requestErr
 		}
 		lastErr = requestErr
 		if attempt+1 < lifecycleRequestMaxAttempts {
 			if err := sleepWithJitter(ctx, lifecycleRetryDelay(attempt)); err != nil {
-				return "", 0, err
+				return "", sdkAuthClaims{}, err
 			}
 		}
 	}
 	if reply == nil {
-		return "", 0, lastErr
+		return "", sdkAuthClaims{}, lastErr
 	}
 	var parsed sdkAuthResolveResponse
 	if decodeErr := json.Unmarshal(reply, &parsed); decodeErr != nil {
-		return "", 0, decodeErr
+		return "", sdkAuthClaims{}, decodeErr
 	}
 	if !parsed.OK || parsed.Token == "" {
-		return "", 0, fmt.Errorf("NATS auth resolve failed: %s", parsed.Error)
+		return "", sdkAuthClaims{}, fmt.Errorf("NATS auth resolve failed: %s", parsed.Error)
 	}
 	claims, err := decodeJWTClaims(parsed.Token)
 	if err != nil {
-		return "", 0, err
+		return "", sdkAuthClaims{}, err
 	}
-	return parsed.Token, claims.Exp, nil
+	return parsed.Token, claims, nil
 }
 
 func isRetryableNATSError(err error) bool {

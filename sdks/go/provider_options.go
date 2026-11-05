@@ -20,11 +20,15 @@ type ProviderTransferOptions struct {
 	// Distribute defaults to true; set it to Bool(false) to prepare and stream
 	// signed routes without distributing the transfer.
 	Distribute *bool
-	// IdempotencyKey is a stable caller identity used to derive the transfer id
-	// and lifecycle request ids.
+	// IdempotencyKey is a stable caller identity used, together with the API
+	// key's client identity, to derive the transfer id and lifecycle request ids.
 	IdempotencyKey string
 	// RouteGenerationID is internal recovery state; callers normally omit it.
 	RouteGenerationID string
+	// BillingParent names the billing operation the transfer belongs to, such
+	// as the workflow run that starts it; Beam records the transfer's charge
+	// under it. It is 1 to 256 letters, digits and . _ : @ / + = -.
+	BillingParent string
 
 	// Ownership is an ownership fence, separate from the foreground ctx. When it
 	// is done, the SDK stops signing, route replay, multipart creation, and
@@ -60,6 +64,7 @@ func (options ProviderTransferOptions) input() providerTransferInput {
 		distribute:              options.Distribute == nil || *options.Distribute,
 		idempotencyKey:          options.IdempotencyKey,
 		routeGenerationID:       options.RouteGenerationID,
+		billingParent:           options.BillingParent,
 		ownership:               options.Ownership,
 		onBeforeTransferPrepare: options.OnBeforeTransferPrepare,
 		onPrepared:              options.OnPrepared,

@@ -37,7 +37,10 @@ type TransferCreateRequest struct {
 	Callbacks       []CallbackConfig `json:"callbacks,omitempty"`
 	ProgressiveMode bool             `json:"progressive_mode,omitempty"`
 	SignedURLFlow   SignedURLFlow    `json:"signed_url_flow,omitempty"`
-	IdempotencyKey  string           `json:"-"`
+	// BillingParent names the billing operation the transfer belongs to; see
+	// ProviderTransferOptions.BillingParent.
+	BillingParent  string `json:"billing_parent,omitempty"`
+	IdempotencyKey string `json:"-"`
 }
 
 type TransferCreateResponse struct {
@@ -414,10 +417,14 @@ type TransferPrepareRequest struct {
 	Destinations  []PreparedDestination
 	Name          string
 	URLsExpiresAt string
-	// IdempotencyKey is a stable caller identity used to derive the transfer id.
+	// IdempotencyKey is a stable caller identity used, together with the API
+	// key's client identity, to derive the transfer id.
 	IdempotencyKey string
 	// RouteGenerationID is internal recovery state; callers normally leave it empty.
 	RouteGenerationID string
+	// BillingParent names the billing operation the transfer belongs to; see
+	// ProviderTransferOptions.BillingParent.
+	BillingParent string
 
 	// providerPartSize is the part size a Hugging Face destination's Hub
 	// dictated; only the provider flow sets it.

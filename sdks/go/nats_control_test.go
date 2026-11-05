@@ -41,6 +41,9 @@ func TestTLSGatewayUsesHandshakeFirstAndServerName(t *testing.T) {
 	if options.MaxReconnect != -1 {
 		t.Fatalf("reconnects must stay unbounded, got %d", options.MaxReconnect)
 	}
+	if options.InboxPrefix != "_INBOX.c.b1m_test_key" {
+		t.Fatalf("inbox prefix must be scoped to the key prefix, got %q", options.InboxPrefix)
+	}
 	plain := natsOptionsFor(t, "nats://127.0.0.1:4222")
 	if plain.TLSHandshakeFirst || plain.TLSConfig != nil {
 		t.Fatalf("nats:// must not force TLS: %+v", plain)
@@ -181,7 +184,30 @@ func unsignedTestJWT(t *testing.T, exp int64) string {
 		}
 		return base64.RawURLEncoding.EncodeToString(raw)
 	}
-	return encode(map[string]any{"alg": "none", "typ": "JWT"}) + "." + encode(map[string]any{"token_type": "beam-sdk-auth", "exp": exp}) + ".signature"
+	return encode(map[string]any{"alg": "none", "typ": "JWT"}) + "." + encode(map[string]any{"token_type": "beam-sdk-auth", "client_id": testTokenClientID, "exp": exp}) + ".signature"
+}
+
+const testTokenClientID = "00000000-0000-4000-8000-000000000001"
+
+func TestClientIDComesFromTheResolvedAuthToken(t *testing.T) {
+	control := newNatsControl("beam_test", "nats://127.0.0.1:4222", "prod", 1)
+	resolves := 0
+	control.requestOverride = func(_ context.Context, subject string, _ []byte) ([]byte, error) {
+		if !strings.Contains(subject, ".auth.") {
+			t.Fatalf("unexpected request on %s", subject)
+		}
+		resolves++
+		return json.Marshal(map[string]any{"ok": true, "token": unsignedTestJWT(t, time.Now().Unix()+3600)})
+	}
+	for range 2 {
+		clientID, err := control.clientID(context.Background())
+		if err != nil || clientID != testTokenClientID {
+			t.Fatalf("clientID = %q, %v", clientID, err)
+		}
+	}
+	if resolves != 1 {
+		t.Fatalf("the cached token must serve the client id (resolves=%d)", resolves)
+	}
 }
 
 func TestExpiredLifecycleAuthRetriesWithFreshTokenAndStableIdentity(t *testing.T) {
