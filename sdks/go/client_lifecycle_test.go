@@ -21,7 +21,7 @@ func TestLifecycleIdempotencyKeysFollowTransferDerivations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.TransferID != transferIDForIdempotencyKey("caller-step") || fake.calls[0].idempotencyKey != "transfer:"+created.TransferID+":create" {
+	if created.TransferID != transferIDForIdempotencyKey(fakeClientID, "caller-step") || fake.calls[0].idempotencyKey != "transfer:"+created.TransferID+":create" {
 		t.Fatalf("create key = %q for %s", fake.calls[0].idempotencyKey, created.TransferID)
 	}
 	prepared, err := client.PrepareTransferWithRequest(context.Background(), TransferPrepareRequest{
@@ -41,6 +41,25 @@ func TestLifecycleIdempotencyKeysFollowTransferDerivations(t *testing.T) {
 		if _, sent := call.payload[key]; sent {
 			t.Fatalf("prepare payload must not carry %s: %+v", key, call.payload)
 		}
+	}
+}
+
+func TestTransferIDDerivationIsScopedToTheClient(t *testing.T) {
+	// Shared vector: client 11111111-1111-4111-8111-111111111111 with key demo-key in every SDK.
+	const clientID = "11111111-1111-4111-8111-111111111111"
+	const expected = "4affd9a5-09db-5139-b7ea-6c141867cc96"
+	if got := transferIDForIdempotencyKey(clientID, "demo-key"); got != expected {
+		t.Fatalf("derived %s, want %s", got, expected)
+	}
+	if got := transferIDForIdempotencyKey(clientID, " demo-key "); got != expected {
+		t.Fatalf("keys must be trimmed: %s", got)
+	}
+	if transferIDForIdempotencyKey("22222222-2222-4222-8222-222222222222", "demo-key") == expected {
+		t.Fatal("the same key under another client must derive another id")
+	}
+	random := transferIDForIdempotencyKey(clientID, " ")
+	if random == transferIDForIdempotencyKey(clientID, "") || validateID(random, "transferID") != nil {
+		t.Fatalf("no key must derive a random id, got %s", random)
 	}
 }
 

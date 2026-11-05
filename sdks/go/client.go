@@ -11,6 +11,7 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -33,6 +34,7 @@ func DevURL() string {
 
 type Client struct {
 	onDiagnostics                     func(SDKPerformanceSummary)
+	onWarning                         func(Warning)
 	natsURL                           string
 	environment                       string
 	apiKey                            string
@@ -75,6 +77,7 @@ func (error *RouteRecoveryPendingError) Unwrap() error {
 type Option func(*Client)
 
 type transferControl interface {
+	clientID(ctx context.Context) (string, error)
 	request(ctx context.Context, messageType string, payload map[string]any, transferID string, output any, idempotencyKey ...string) error
 	splitRoutes(messageType string, basePayload map[string]any, routes []SignedChunkRoute) ([][]SignedChunkRoute, error)
 	openTerminalSignalWaiter(ctx context.Context, transferID string) (*TransferTerminalSignalWaiter, error)
@@ -142,6 +145,7 @@ func newClient(options []Option) (*Client, []error) {
 	control.maxPayloadBytes = client.maxPayloadBytes
 	control.subjectPrefix = client.subjectPrefix
 	control.requestTimeout = client.requestTimeout
+	control.onWarning = client.onWarning
 	client.control = control
 	return client, client.configErrors
 }
@@ -154,6 +158,12 @@ func isNATSLifecycleURL(natsURL string) bool {
 // invalid records an invalid option value; NewClient ignores it, New rejects it.
 func (client *Client) invalid(format string, args ...any) {
 	client.configErrors = append(client.configErrors, fmt.Errorf(format, args...))
+}
+
+func WithWarningHandler(handler func(Warning)) Option {
+	return func(client *Client) {
+		client.onWarning = handler
+	}
 }
 
 func WithNATSURL(natsURL string) Option {
@@ -269,9 +279,16 @@ func (client *Client) Close() {
 // CreateTransfer creates a raw (non-provider) transfer. It is the Go name for
 // the TypeScript createRawTransfer; see CreateRawTransfer.
 func (client *Client) CreateTransfer(ctx context.Context, input TransferCreateRequest) (*TransferCreateResponse, error) {
+	if err := validateBillingParent(input.BillingParent); err != nil {
+		return nil, err
+	}
 	var result TransferCreateResponse
 	if input.TransferID == "" {
-		input.TransferID = transferIDForIdempotencyKey(input.IdempotencyKey)
+		clientID, err := client.control.clientID(ctx)
+		if err != nil {
+			return nil, err
+		}
+		input.TransferID = transferIDForIdempotencyKey(clientID, input.IdempotencyKey)
 	}
 	if err := validateID(input.TransferID, "transferID"); err != nil {
 		return nil, err
@@ -423,9 +440,16 @@ func (client *Client) PrepareTransferWithRequest(ctx context.Context, request Tr
 // request key; an empty key derives transfer:<id>:prepare. The route generation
 // derives from that key unless the request names one.
 func (client *Client) prepareTransferWithRequestKey(ctx context.Context, request TransferPrepareRequest, requestKey string) (*TransferPrepareResponse, error) {
+	if err := validateBillingParent(request.BillingParent); err != nil {
+		return nil, err
+	}
 	transferID := request.TransferID
 	if transferID == "" {
-		transferID = transferIDForIdempotencyKey(request.IdempotencyKey)
+		clientID, err := client.control.clientID(ctx)
+		if err != nil {
+			return nil, err
+		}
+		transferID = transferIDForIdempotencyKey(clientID, request.IdempotencyKey)
 	}
 	if err := validateID(transferID, "transferID"); err != nil {
 		return nil, err
@@ -449,6 +473,9 @@ func (client *Client) prepareTransferWithRequestKey(ctx context.Context, request
 	}
 	if request.providerPartSize > 0 {
 		body["provider_part_size"] = request.providerPartSize
+	}
+	if request.BillingParent != "" {
+		body["billing_parent"] = request.BillingParent
 	}
 
 	var result TransferPrepareResponse
@@ -1159,11 +1186,15 @@ func exactIntegerValue(value any) (int, bool) {
 	}
 }
 
-func transferIDForIdempotencyKey(key string) string {
+// transferIDForIdempotencyKey derives the transfer id for a caller idempotency
+// key, scoped to the authenticated client: the same key under the same client
+// always derives the same id, while the public id is not guessable from the key
+// alone and two clients using one key never collide. No key derives a random id.
+func transferIDForIdempotencyKey(clientID string, key string) string {
 	if strings.TrimSpace(key) == "" {
 		return newTransferID()
 	}
-	return stableIDFromIdentity("beam-transfer:" + strings.TrimSpace(key))
+	return stableIDFromIdentity("beam-transfer:" + clientID + ":" + strings.TrimSpace(key))
 }
 
 func stableIDFromIdentity(identity string) string {
@@ -1172,6 +1203,17 @@ func stableIDFromIdentity(identity string) string {
 	bytes[6] = (bytes[6] & 0x0f) | 0x50
 	bytes[8] = (bytes[8] & 0x3f) | 0x80
 	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", bytes[0:4], bytes[4:6], bytes[6:8], bytes[8:10], bytes[10:16])
+}
+
+var billingParentPattern = regexp.MustCompile(`^[A-Za-z0-9._:@/+=-]{1,256}$`)
+
+// validateBillingParent accepts an empty (unset) billing parent or 1 to 256
+// letters, digits and . _ : @ / + = -.
+func validateBillingParent(value string) error {
+	if value != "" && !billingParentPattern.MatchString(value) {
+		return fmt.Errorf("billingParent must be 1 to 256 letters, digits and . _ : @ / + = -")
+	}
+	return nil
 }
 
 func validateID(value string, name string) error {

@@ -70,6 +70,21 @@ The provider-aware API covers S3, R2, S3-compatible, Hippius, and Hugging Face c
 
 Source and destination credentials must not be restricted to specific IP addresses or networks. When storage refuses access, `WaitForTransfer` returns `*StorageAccessError` (`Code` is `source_access_denied` or `destination_access_denied`).
 
+## Credit And Key Errors
+
+Credit, billing, key and permission refusals return these errors. Each embeds `LifecycleRequestError`, so `errors.As` matches both the specific type and `*LifecycleRequestError`:
+
+- `*InsufficientCreditsError` (402, `insufficient_credits`): `CreditsRequired` and `CreditsAvailable` (`*float64`, nil when unknown) and `Reason` (`pool_exhausted`, `key_cap_exhausted`, `key_budget_blocked`, or empty).
+- `*BillingAccountNotLinkedError` (402, `billing_account_not_linked`): the API key has no billing account.
+- `*APIKeyInvalidError` (401 or 403, `api_key_invalid`): the API key is unknown, expired, revoked or disabled.
+- `*PermissionRequiredError` (403, `permission_required`): `Permission` names the permission the key needs.
+
+`WithWarningHandler(func(Warning))` receives advisories attached to lifecycle replies, such as `credits_low` when the credit balance is at or below the low threshold (`Detail["remaining"]`, `Detail["low_threshold"]`). Each distinct warning message is delivered once per client, on its own goroutine.
+
+## Billing Parent
+
+`BillingParent` names the billing operation a transfer belongs to, such as the workflow run that starts it; Beam records the transfer's charge under that operation. `ProviderTransferOptions` (and so `CreateProviderTransfer`, `PrepareProviderTransferWithOptions` and `ResumeProviderTransfer`), `TransferCreateRequest` and `TransferPrepareRequest` carry it; an empty value sends none. A billing parent is 1 to 256 letters, digits and `. _ : @ / + = -`; the client returns an error for any other value before sending a request.
+
 ## Client Configuration
 
 `New` validates configuration like the TypeScript constructor: the API key is required, the lifecycle URL must be `nats://` or `tls://`, and numeric options must be positive. `NewClient` keeps its original lenient behaviour (invalid option values are ignored and a missing API key fails at the first request).
@@ -154,7 +169,7 @@ Route replay after a Runtime epoch change reuses the negotiated Hub plan; it nev
 
 ## Provider Transfer Options
 
-`CreateProviderTransfer` (the TypeScript `createTransfer`) and `PrepareProviderTransferWithOptions` take `ProviderTransferOptions`: `Sources`, `Destinations`, `Name`, `ExpiresIn` (1 hour), `Distribute` (true when nil), `IdempotencyKey`, `RouteGenerationID`, `Ownership`, and the callbacks below. The positional `PrepareProviderTransfer` remains and behaves as before.
+`CreateProviderTransfer` (the TypeScript `createTransfer`) and `PrepareProviderTransferWithOptions` take `ProviderTransferOptions`: `Sources`, `Destinations`, `Name`, `ExpiresIn` (1 hour), `Distribute` (true when nil), `IdempotencyKey`, `RouteGenerationID`, `BillingParent`, `Ownership`, and the callbacks below. The positional `PrepareProviderTransfer` remains and behaves as before.
 
 - `OnBeforeTransferPrepare` runs after sources are signed and before `transfer.prepare`.
 - `OnPrepared` runs after prepare and before routes stream, including during resume.
@@ -171,7 +186,7 @@ Provider transfers use `transfer-client-control/v7`. Every reply carries Runtime
 
 The client signs up to 64 routes concurrently by default and emits 1,024-route logical batches. Encoded MessagePack requests target 4 MiB physical batches under `maxPayloadBytes` (8 MiB by default). The splitter reserves control-envelope headroom for the live auth token and request identity so the encoded request stays below the guard. A single route above the 4 MiB target but within the guard publishes alone; one larger than the guard fails before publication with both sizes in the error. Each multipart group manifest is published as its own request. Multipart create and abort requests use `WithMultipartControlConcurrency` (2 by default), independent from route signing.
 
-Lifecycle requests retry transient failures up to three times with the same request identity and payload. Cached SDK auth refreshes 30 seconds before expiry, and an `auth_token_expired` reply is retried with a fresh token and the same request identity. Lifecycle idempotency keys derive from the transfer id (`transfer:<id>:create`, `transfer:<id>:prepare`), and the route generation derives from the prepare key. Non-success replies surface as `*LifecycleRequestError` with `Status`, `Code`, `Message`, and `Body`.
+Lifecycle requests retry transient failures up to three times with the same request identity and payload. Cached SDK auth refreshes 30 seconds before expiry, and an `auth_token_expired` reply is retried with a fresh token and the same request identity. Lifecycle idempotency keys derive from the transfer id (`transfer:<id>:create`, `transfer:<id>:prepare`), and the route generation derives from the prepare key. Non-success replies surface as `*LifecycleRequestError` with `Status`, `Code`, `Message`, and `Body`, directly or through the credit and key error types.
 
 A non-recoverable provider setup or route failure cancels the transfer, aborts the multipart uploads this owner created, and returns `*ProviderTransferError`. Its `TransferCancelled` and `MultipartCleanupComplete` fields report the outcome, `Errors` (via `Unwrap() []error`) keeps the original, cancellation, and cleanup failures, and its message never echoes provider errors. The recovery lease, whose credentials the cleanup needs, is released only after cleanup finishes.
 

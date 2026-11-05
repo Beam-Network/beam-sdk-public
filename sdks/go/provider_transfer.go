@@ -27,6 +27,7 @@ type providerTransferInput struct {
 	distribute        bool
 	idempotencyKey    string
 	routeGenerationID string
+	billingParent     string
 
 	ownership               context.Context
 	onBeforeTransferPrepare func(context.Context) error
@@ -133,6 +134,9 @@ func (client *Client) executeProviderTransfer(ctx context.Context, input provide
 	if err := ownershipErr(input.ownership); err != nil {
 		return nil, err
 	}
+	if err := validateBillingParent(input.billingParent); err != nil {
+		return nil, err
+	}
 	expiresIn := input.expiresIn
 	if expiresIn < 0 {
 		return nil, fmt.Errorf("expiresIn must be a positive duration")
@@ -213,6 +217,7 @@ func (client *Client) executeProviderTransfer(ctx context.Context, input provide
 		Sources:          preparedSources,
 		Destinations:     preparedDestinations,
 		Name:             input.name,
+		BillingParent:    input.billingParent,
 		providerPartSize: providerPartSize,
 	}
 	var prepared *TransferPrepareResponse

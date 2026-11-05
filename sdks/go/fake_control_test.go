@@ -36,6 +36,13 @@ type fakeTransferCall struct {
 	idempotencyKey string
 }
 
+// fakeClientID is the client_id claim the fake control's auth token carries.
+const fakeClientID = "11111111-1111-4111-8111-111111111111"
+
+func (fake *fakeTransferControl) clientID(context.Context) (string, error) {
+	return fakeClientID, nil
+}
+
 func (fake *fakeTransferControl) request(_ context.Context, messageType string, payload map[string]any, transferID string, output any, idempotencyKeys ...string) error {
 	idempotencyKey := ""
 	if len(idempotencyKeys) > 0 {
