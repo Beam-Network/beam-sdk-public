@@ -17,6 +17,17 @@ import (
 type ProviderSource interface{}
 type ProviderDestination interface{}
 
+// SignedURLLifetime is the default lifetime of a transfer's signed URLs: one
+// hour plus the delivered bytes (source bytes × destinations) at 100 MB/s, at
+// most seven days.
+func SignedURLLifetime(deliveredBytes int64) time.Duration {
+	seconds := deliveredBytes / 100_000_000
+	if deliveredBytes%100_000_000 > 0 {
+		seconds++
+	}
+	return time.Duration(min(604_800, 3_600+seconds)) * time.Second
+}
+
 // PrepareProviderTransfer signs provider sources and destinations, prepares the
 // transfer, and streams its signed routes.
 func (client *Client) PrepareProviderTransfer(

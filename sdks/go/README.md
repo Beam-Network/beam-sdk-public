@@ -169,7 +169,7 @@ Route replay after a Runtime epoch change reuses the negotiated Hub plan; it nev
 
 ## Provider Transfer Options
 
-`CreateProviderTransfer` (the TypeScript `createTransfer`) and `PrepareProviderTransferWithOptions` take `ProviderTransferOptions`: `Sources`, `Destinations`, `Name`, `ExpiresIn` (1 hour), `Distribute` (true when nil), `IdempotencyKey`, `RouteGenerationID`, `BillingParent`, `Ownership`, and the callbacks below. The positional `PrepareProviderTransfer` remains and behaves as before.
+`CreateProviderTransfer` (the TypeScript `createTransfer`) and `PrepareProviderTransferWithOptions` take `ProviderTransferOptions`: `Sources`, `Destinations`, `Name`, `ExpiresIn` (by default `SignedURLLifetime(source bytes × destinations)`: one hour plus one second per 100 MB delivered, at most seven days), `Distribute` (true when nil), `IdempotencyKey`, `RouteGenerationID`, `BillingParent`, `Ownership`, and the callbacks below. The positional `PrepareProviderTransfer` remains and behaves as before.
 
 - `OnBeforeTransferPrepare` runs after sources are signed and before `transfer.prepare`.
 - `OnPrepared` runs after prepare and before routes stream, including during resume.
@@ -250,6 +250,8 @@ The optional `WithDiagnostics` callback receives bounded preparation measurement
 Optional `storage_location` (`StorageLocation` in Go) describes the physical
 storage location. It is separate from the region used to sign provider requests.
 Leave it unset when unknown; a signing region such as R2's `auto` is not a location.
+Without it, an R2 or Google Cloud Storage source or destination carries the location
+its bucket reports for itself as `bucket_location` in its plan metadata.
 
 When supported by Core, diagnostics use `sdk-performance/v2`: bounded histograms,
 preparation milestones, concurrency high-water marks, and separate provider,

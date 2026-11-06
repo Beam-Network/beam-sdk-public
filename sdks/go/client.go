@@ -52,6 +52,9 @@ type Client struct {
 	huggingFaceMu      sync.Mutex
 	huggingFaceUploads map[string][]*huggingFaceUploadState
 
+	bucketLocationsMu sync.Mutex
+	bucketLocations   map[string]*bucketLocationLookup
+
 	// signerMu guards the per-transfer signers that outlive the initial route
 	// stream and the in-flight integrity audit submissions.
 	signerMu             sync.Mutex
@@ -978,25 +981,28 @@ func (client *Client) WaitForTransferWithOptions(ctx context.Context, transferID
 	}()
 	deadline := time.Now().Add(timeout)
 	for {
+		// A status request can fail while Runtime restarts; the transfer's recovery lease keeps it going.
 		status, err := client.TransferStatus(ctx, transferID)
-		if err != nil {
+		if err != nil && (ctx.Err() != nil || !isRetryableLifecycleError(err)) {
 			return nil, err
 		}
-		switch status.Status {
-		case "completed":
-			// The parts have landed; publish them as a Hub commit before reporting success.
-			if err := client.FinalizeHuggingFaceUploads(ctx, transferID); err != nil {
-				return nil, err
+		if err == nil {
+			switch status.Status {
+			case "completed":
+				// The parts have landed; publish them as a Hub commit before reporting success.
+				if err := client.FinalizeHuggingFaceUploads(ctx, transferID); err != nil {
+					return nil, err
+				}
+				return status, nil
+			case "failed":
+				message := ""
+				if status.ErrorMessage != nil {
+					message = *status.ErrorMessage
+				}
+				return nil, NewTransferFailedError(transferID, message)
+			case "cancelled":
+				return nil, fmt.Errorf("transfer cancelled")
 			}
-			return status, nil
-		case "failed":
-			message := ""
-			if status.ErrorMessage != nil {
-				message = *status.ErrorMessage
-			}
-			return nil, NewTransferFailedError(transferID, message)
-		case "cancelled":
-			return nil, fmt.Errorf("transfer cancelled")
 		}
 		remaining := time.Until(deadline)
 		if remaining <= 0 {

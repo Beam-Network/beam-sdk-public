@@ -308,6 +308,30 @@ func TestRuntimeEpochRecoveryCoalescesAndClearsSecrets(t *testing.T) {
 	control.close()
 }
 
+func TestWaitForTransferKeepsWaitingThroughARetryableStatusFailure(t *testing.T) {
+	const transferID = "3f0c9a52-8a8f-4d44-9d7c-4b2f7f0c1a11"
+	completed := map[string]any{"transfer_id": transferID, "status": "completed"}
+	client := NewClient(WithNATSURL("nats://127.0.0.1:4222"), WithAPIKey("b1m_go"))
+	client.control = &fakeTransferControl{
+		failOnceAt:     "transfer.status",
+		failOnceError:  errors.New("nats: no responders available for request"),
+		statusResponse: completed,
+	}
+	status, err := client.WaitForTransfer(context.Background(), transferID, time.Second, time.Millisecond)
+	if err != nil || status.Status != "completed" {
+		t.Fatalf("a retryable status failure must not end the wait: status=%v err=%v", status, err)
+	}
+
+	client.control = &fakeTransferControl{
+		failOnceAt:     "transfer.status",
+		failOnceError:  errors.New("forbidden"),
+		statusResponse: completed,
+	}
+	if _, err := client.WaitForTransfer(context.Background(), transferID, time.Second, time.Millisecond); err == nil || !strings.Contains(err.Error(), "forbidden") {
+		t.Fatalf("any other status failure must end the wait: %v", err)
+	}
+}
+
 func TestWaitForTransferReturnsStorageAccessErrorVerbatim(t *testing.T) {
 	client := NewClient(WithNATSURL("nats://127.0.0.1:4222"), WithAPIKey("b1m_go"))
 	message := "destination_access_denied: The destination storage refused Beam's requests (403 AccessDenied). Check that the credentials allow writes to this bucket and path and are not restricted to specific IP addresses or networks."
