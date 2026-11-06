@@ -15,7 +15,8 @@ type ProviderTransferOptions struct {
 	Sources      []ProviderSource
 	Destinations []ProviderDestination
 	Name         string
-	// ExpiresIn is the lifetime of signed URLs. Defaults to one hour.
+	// ExpiresIn is the lifetime of signed URLs. Defaults to
+	// SignedURLLifetime(source bytes × destinations).
 	ExpiresIn time.Duration
 	// Distribute defaults to true; set it to Bool(false) to prepare and stream
 	// signed routes without distributing the transfer.

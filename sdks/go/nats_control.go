@@ -978,8 +978,8 @@ func (c *natsControl) splitRoutes(messageType string, basePayload map[string]any
 	chunks := make([][]SignedChunkRoute, 0, 1)
 	for offset := 0; offset < len(routes); {
 		low, high, accepted := 1, len(routes)-offset, 0
+		count := high
 		for low <= high {
-			count := (low + high) / 2
 			size, err := encodedSize(routes[offset : offset+count])
 			if err != nil {
 				return nil, err
@@ -990,6 +990,7 @@ func (c *natsControl) splitRoutes(messageType string, basePayload map[string]any
 			} else {
 				high = count - 1
 			}
+			count = (low + high) / 2
 		}
 		if accepted == 0 {
 			size, err := encodedSize(routes[offset : offset+1])

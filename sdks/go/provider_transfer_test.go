@@ -2,12 +2,14 @@ package beamnetworksdk
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -89,6 +91,141 @@ func TestRouteReplayReusesCreatedMultipartUploads(t *testing.T) {
 	last := batches[len(batches)-1].payload["route_batch"].(map[string]any)["routes"].([]map[string]any)
 	if last[0]["multipart_group_id"] != multipartGroupStateKey(prepared.TransferID, "dst_0", "src_0", "out/file.bin") {
 		t.Fatalf("replayed route lost its multipart group: %#v", last[0])
+	}
+}
+
+func TestSignedURLLifetimeAddsTheDeliveredBytesAt100MBPerSecond(t *testing.T) {
+	for deliveredBytes, seconds := range map[int64]int64{
+		1_000_000_000_000:     13_600,
+		2_000_000_000_000:     23_600,
+		1 << 30:               3_611,
+		1:                     3_601,
+		0:                     3_600,
+		1_000_000_000_000_000: 604_800,
+	} {
+		if got := SignedURLLifetime(deliveredBytes); got != time.Duration(seconds)*time.Second {
+			t.Errorf("SignedURLLifetime(%d) = %v, want %ds", deliveredBytes, got, seconds)
+		}
+	}
+}
+
+func TestProviderTransfersSignForTheDeliveredBytesUnlessExpiresInIsGiven(t *testing.T) {
+	const sourceSize = int64(1_000_000_000_000)
+	if got := SignedURLLifetime(2 * sourceSize); got != 23_600*time.Second {
+		t.Fatalf("two destinations of 1 TB = %v", got)
+	}
+	for _, test := range []struct {
+		name      string
+		expiresIn time.Duration
+		discovery string
+		lifetime  time.Duration
+	}{
+		{name: "default", discovery: "3600", lifetime: SignedURLLifetime(2 * sourceSize)},
+		{name: "explicit", expiresIn: 10 * time.Minute, discovery: "600", lifetime: 10 * time.Minute},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			storage := newFakeS3(t)
+			storage.contentLength = sourceSize
+			fake := &fakeTransferControl{}
+			client := newTestClient(t, fake)
+			startedAt := time.Now().Truncate(time.Second)
+			if _, err := client.PrepareProviderTransferWithOptions(context.Background(), ProviderTransferOptions{
+				Sources:      []ProviderSource{r2Source(storage.URL)},
+				Destinations: []ProviderDestination{r2Destination(storage.URL, "a.bin"), r2Destination(storage.URL, "b.bin")},
+				ExpiresIn:    test.expiresIn,
+				Distribute:   Bool(false),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			finishedAt := time.Now()
+			decode := func(call fakeTransferCall, out any) {
+				t.Helper()
+				encoded, err := json.Marshal(call.payload)
+				if err == nil {
+					err = json.Unmarshal(encoded, out)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			amzExpires := func(signed string) string {
+				t.Helper()
+				parsed, err := url.Parse(signed)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return parsed.Query().Get("X-Amz-Expires")
+			}
+
+			var prepare struct {
+				Sources []struct {
+					URL string `json:"url"`
+				} `json:"sources"`
+			}
+			decode(fake.callsOf("transfer.prepare")[0], &prepare)
+			if got := amzExpires(prepare.Sources[0].URL); got != test.discovery {
+				t.Fatalf("discovery URL lifetime = %q, want %q", got, test.discovery)
+			}
+
+			signed := []string{}
+			expiresAt := []string{}
+			var begin struct {
+				URLsExpiresAt string `json:"urls_expires_at"`
+			}
+			decode(fake.callsOf("transfer.route_stream.begin")[0], &begin)
+			expiresAt = append(expiresAt, begin.URLsExpiresAt)
+			for _, call := range fake.callsOf("transfer.route_stream.batch") {
+				var batch struct {
+					RouteBatch struct {
+						Routes []struct {
+							DestURL string `json:"dest_url"`
+						} `json:"routes"`
+						SourceChunks []struct {
+							SourceURL string `json:"source_url"`
+						} `json:"source_chunks"`
+					} `json:"route_batch"`
+				}
+				decode(call, &batch)
+				for _, route := range batch.RouteBatch.Routes {
+					signed = append(signed, route.DestURL)
+				}
+				for _, chunk := range batch.RouteBatch.SourceChunks {
+					signed = append(signed, chunk.SourceURL)
+				}
+			}
+			for _, call := range fake.callsOf("transfer.route_stream.manifest") {
+				var manifest struct {
+					Groups []struct {
+						CompleteURL   string `json:"complete_url"`
+						URLsExpiresAt string `json:"urls_expires_at"`
+					} `json:"groups"`
+				}
+				decode(call, &manifest)
+				for _, group := range manifest.Groups {
+					signed = append(signed, group.CompleteURL)
+					expiresAt = append(expiresAt, group.URLsExpiresAt)
+				}
+			}
+
+			if len(signed) != 5 {
+				t.Fatalf("signed URLs = %d, want two destination parts, one source chunk, two multipart controls", len(signed))
+			}
+			want := strconv.Itoa(int(test.lifetime / time.Second))
+			for _, value := range signed {
+				if got := amzExpires(value); got != want {
+					t.Fatalf("transfer URL lifetime = %q, want %q", got, want)
+				}
+			}
+			for _, value := range expiresAt {
+				parsed, err := time.Parse(time.RFC3339Nano, value)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if parsed.Before(startedAt.Add(test.lifetime)) || parsed.After(finishedAt.Add(test.lifetime)) {
+					t.Fatalf("expiry %s is outside [%s, %s]", parsed, startedAt.Add(test.lifetime), finishedAt.Add(test.lifetime))
+				}
+			}
+		})
 	}
 }
 

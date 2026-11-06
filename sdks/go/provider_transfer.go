@@ -141,9 +141,6 @@ func (client *Client) executeProviderTransfer(ctx context.Context, input provide
 	if expiresIn < 0 {
 		return nil, fmt.Errorf("expiresIn must be a positive duration")
 	}
-	if expiresIn == 0 {
-		expiresIn = time.Hour
-	}
 	throwIfCancelled := func(transferID string) error {
 		if input.throwIfCancelled == nil {
 			return nil
@@ -180,6 +177,15 @@ func (client *Client) executeProviderTransfer(ctx context.Context, input provide
 		destinationsByID[prepared.DestinationID] = destination
 	}
 
+	destinationLocations := make([]*bucketLocationLookup, len(destinations))
+	for index, destination := range destinations {
+		destinationLocations[index] = client.bucketLocation(destination)
+	}
+	sourceLocations := make([]*bucketLocationLookup, len(sources))
+	for index, source := range sources {
+		sourceLocations[index] = client.bucketLocation(source)
+	}
+
 	if err := throwIfCancelled(""); err != nil {
 		return nil, err
 	}
@@ -193,6 +199,19 @@ func (client *Client) executeProviderTransfer(ctx context.Context, input provide
 			return nil, ownershipLost
 		}
 		return nil, err
+	}
+	for index := range preparedSources {
+		preparedSources[index].Metadata = withBucketLocation(preparedSources[index].Metadata, sourceLocations[index].wait(ctx))
+	}
+	for index := range preparedDestinations {
+		preparedDestinations[index].Metadata = withBucketLocation(preparedDestinations[index].Metadata, destinationLocations[index].wait(ctx))
+	}
+	if expiresIn == 0 {
+		var sourceBytes int64
+		for _, preparedSource := range preparedSources {
+			sourceBytes += preparedSource.Size
+		}
+		expiresIn = SignedURLLifetime(sourceBytes * int64(len(destinations)))
 	}
 	if err := throwIfCancelled(""); err != nil {
 		return nil, err

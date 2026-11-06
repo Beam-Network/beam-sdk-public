@@ -1,9 +1,11 @@
 package beamnetworksdk
 
 import (
+	"cmp"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -22,6 +24,7 @@ type fakeS3 struct {
 	activeCreates      int
 	maxActiveCreates   int
 	createDelay        time.Duration
+	contentLength      int64
 	uploadID           func(count int) string
 	abortAuthorization string
 	abortFailures      int
@@ -45,8 +48,9 @@ func (server *fakeS3) serve(writer http.ResponseWriter, request *http.Request) {
 	case request.Method == http.MethodHead:
 		server.mu.Lock()
 		server.headCount++
+		contentLength := cmp.Or(server.contentLength, 1024)
 		server.mu.Unlock()
-		writer.Header().Set("Content-Length", "1024")
+		writer.Header().Set("Content-Length", strconv.FormatInt(contentLength, 10))
 		writer.Header().Set("ETag", `"source-etag"`)
 		writer.Header().Set("Last-Modified", "Wed, 21 Oct 2026 07:28:00 GMT")
 		writer.Header().Set("x-amz-version-id", "source-version")
